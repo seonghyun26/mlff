@@ -134,3 +134,4 @@ samples/
 *.tar
 codebases/
 .bash_history
+*.xyz

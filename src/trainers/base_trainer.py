@@ -70,6 +70,8 @@ from src.common.collaters.parallel_collater import ParallelCollater
 from src.modules.normalizer import log_and_check_normalizers
 
 
+import wandb
+
 @registry.register_trainer("base")
 class BaseTrainer(ABC):
     @property
@@ -136,6 +138,13 @@ class BaseTrainer(ABC):
         # logging the local config
         if self.mode == "train":
             bm_logging.info(f"\n{yaml.dump(self.config, default_flow_style=False)}")
+            
+        # wandb.init(
+        #     project="mlff",
+        #     entity="eddy26",
+        #     group=config["model"]["name"],
+        #     config=config,
+        # )
 
     def _parse_config(self, config):
         logger_name = config["logger"] if isinstance(config["logger"], str) else config["logger"]["name"]

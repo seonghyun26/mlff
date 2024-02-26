@@ -65,6 +65,7 @@ from src.common.config import (
 )
 from src.common.utils import new_trainer_context, new_evaluator_context
 
+import wandb
 
 class Runner(submitit.helpers.Checkpointable):
     def __init__(self):
@@ -102,7 +103,7 @@ if __name__ == "__main__":
     parser = benchmark_flags.get_parser()
     args, override_args = parser.parse_known_args()
 
-    if args.mode in ["train", "validate", "fit-scale"]:
+    if args.mode in ["train", "validate", "fit-scale", "train_al"]:
         config = build_config(args, override_args)
         config = add_benchmark_config(config, args)
         config = add_benchmark_validate_config(config, args)
@@ -111,7 +112,7 @@ if __name__ == "__main__":
         config = build_run_md_config(args)
     elif args.mode == "evaluate":
         config = build_evaluate_config(args)
-
+    
     if args.submit:  
         # Run on cluster (using the implemented job submission)
         # Note that we did not / do not use this way for job submission.
@@ -147,7 +148,7 @@ if __name__ == "__main__":
         )
         log_file = save_experiment_log(args, jobs, configs)
         logging.info(f"Experiment log saved to: {log_file}")
-
+        
     else:  
         # Run locally or cluster (using job schedulers on Samsung Supercom instead of using args.submit)
         Runner()(config)

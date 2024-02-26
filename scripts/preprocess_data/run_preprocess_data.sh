@@ -5,6 +5,8 @@ DATA=$1
 BENCHMARK_HOME=$(realpath ../../)
 DATADIR=${BENCHMARK_HOME}/datasets/${DATA}
 OUTDIR=${BENCHMARK_HOME}/datasets/${DATA}
+# echo $DATADIR
+# echo $OUTDIR
 
 # If you want to prepare .lmdb which saves just atom cloud (containing just coordinates), set "cloud".
 # Or if you want to have graph (containing coordinates as well as edges), set "graph"
@@ -51,6 +53,6 @@ python preprocess.py \
     --data-output-name ood \
     --out-path ${OUTDIR}/ood \
     --r-max $rmax \
-    --max-neighbors $maxneigh \
+    --max-neighbors $maxneigh
 
 fi

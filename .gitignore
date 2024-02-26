@@ -127,3 +127,10 @@ datasets/HfO_raw/
 
 # artifact
 .nfs*
+
+
+docker.txt
+samples/
+*.tar
+codebases/
+.bash_history

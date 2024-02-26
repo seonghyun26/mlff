@@ -19,15 +19,15 @@ You should specify `DATA` and `OUTDATA_TYPE`.
 ### ■ Option 1 (`cloud`)
 : save coordinates
 ```
-./run_preprocess_data.py SiN cloud
-./run_preprocess_data.py HfO cloud
+./run_preprocess_data.sh SiN cloud
+./run_preprocess_data.sh HfO cloud
 ```
 
 ### ■ Option 2 (`graph`)
 : save coordinates and edges (which are generated with a cutoff radius of 6.0 and a max number of neighborhood atoms of 50)
 ```
-./run_preprocess_data.py SiN graph 6.0 50
-./run_preprocess_data.py HfO graph 6.0 50
+./run_preprocess_data.sh SiN graph 6.0 50
+./run_preprocess_data.sh HfO graph 6.0 50
 ```
 
 Some models can generate graphs from coordinates of atoms on-the-fly, but some cannot (such as NequIP, Allegro, and MACE).

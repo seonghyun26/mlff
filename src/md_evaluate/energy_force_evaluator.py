@@ -27,6 +27,8 @@ from src.modules.metric_evaluator import MetricEvaluator
 from src.md_evaluate.base_evaluator import BaseEvaluator
 
 
+import os
+
 @md_evaluate_registry.register_md_evaluate("ef")
 @md_evaluate_registry.register_md_evaluate("energy_force")
 class EnergyForceEvaluator(BaseEvaluator):
@@ -116,6 +118,10 @@ class EnergyForceEvaluator(BaseEvaluator):
                 table_row_metrics.append(f"{metrics[metric_name]['metric']:.1f}")
         table.add_row(table_row_metrics)
         bm_logging.info(f"\n{table}")
+        
+        table_file_path = os.getcwd() + "/eval_results/HfO/ef/error.txt"
+        with open(table_file_path, "w") as f:
+            f.write(str(table))
 
         if self.measure_time:
             def print_log(time_type, avg_time):

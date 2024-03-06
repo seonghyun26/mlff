@@ -38,8 +38,15 @@ def save_normalization_statistics(trajectory, out_dir, energy_type="free_energy"
     assert energy_type in ["total_energy", "free_energy"]
     if energy_type == "total_energy":
         energy_type = "energy"
-    energies = np.array([atoms.info[energy_type] for atoms in trajectory]) 
-    energies_per_atom = np.array([atoms.info[energy_type]/atoms.get_forces().shape[0] for atoms in trajectory]) 
+    
+    # NOTE: For aspirin
+    if energy_type not in trajectory[0].info:
+        energy_type = "free_energy"
+        energies = np.array([float(next(iter(atoms.info))) for atoms in trajectory]) 
+        energies_per_atom = np.array([float(next(iter(atoms.info)))/atoms.get_forces().shape[0] for atoms in trajectory]) 
+    else:
+        energies = np.array([atoms.info[energy_type] for atoms in trajectory]) 
+        energies_per_atom = np.array([atoms.info[energy_type]/atoms.get_forces().shape[0] for atoms in trajectory]) 
     forces = np.concatenate([atoms.get_forces() for atoms in trajectory])
     norm_stats = {
         "energy_mean": energies.mean(),

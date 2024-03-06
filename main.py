@@ -66,13 +66,14 @@ from src.common.config import (
 from src.common.utils import new_trainer_context, new_evaluator_context
 
 import wandb
+import datetime
 
 class Runner(submitit.helpers.Checkpointable):
     def __init__(self):
         self.config = None
 
     def __call__(self, config):
-        if config["mode"] in ["train", "validate", "fit-scale"]:
+        if config["mode"] in ["train", "validate", "fit-scale", "train_al"]:
             with new_trainer_context(args=args, config=config) as ctx:
                 self.config = ctx.config
                 self.trainer = ctx.trainer
@@ -108,10 +109,20 @@ if __name__ == "__main__":
         config = add_benchmark_config(config, args)
         config = add_benchmark_validate_config(config, args)
         config = add_benchmark_fit_scale_config(config, args)
+        # NOTE: wandb init
+        current_datetime = datetime.datetime.now()
+        current_datetime_str = current_datetime.strftime("%m%d-%H:%M-")
+        wandb.init(
+            project="mlff",
+            entity="eddy26",
+            group=current_datetime_str+"NequIP",
+            config=config,
+        )
     elif args.mode == "run-md":
         config = build_run_md_config(args)
     elif args.mode == "evaluate":
         config = build_evaluate_config(args)
+    
     
     if args.submit:  
         # Run on cluster (using the implemented job submission)

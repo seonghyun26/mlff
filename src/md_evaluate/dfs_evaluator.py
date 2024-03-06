@@ -24,6 +24,9 @@ from src.md_evaluate.base_evaluator import BaseEvaluator
 from src.md_evaluate.utils import calc_error_metric
 
 
+import wandb
+import imageio
+
 @md_evaluate_registry.register_md_evaluate("df")
 @md_evaluate_registry.register_md_evaluate("distribution_functions")
 class DFEvaluator(BaseEvaluator):
@@ -64,6 +67,14 @@ class DFEvaluator(BaseEvaluator):
             ax.set_title(combination)
             ax.legend(label_list)
             plt.savefig(Path(self.config["res_out_dir"]) / f'{fig_name}_{combination}.png')
+            
+            image_path = Path(self.config["res_out_dir"]) / f'{fig_name}_{combination}.png'
+            image_array = imageio.imread(image_path)
+            wandb.log(
+                {
+                    "eval/"+fig_name: wandb.Image(image_array, file_type="png")
+                }
+            )
     
     def output_error_metrics(self, distribution_ref, distribution_dict_mlff, combination_list, file_name):
         distribution_error_dict = defaultdict(dict)
@@ -147,12 +158,11 @@ class DFEvaluator(BaseEvaluator):
             except:
                 self.logger.info(f"Failed to calculate rdf, adf for {mlff_uid}.")
                 continue
-
+        
         self.generate_comparison_figure(rdf_ref, rdf_dict_mlff, pair_list_ref,
                                         fig_name='RDF_compare')
         self.generate_comparison_figure(adf_ref, adf_dict_mlff, triplet_list_ref,
                                         fig_name='ADF_compare')
-
         self.output_error_metrics(rdf_ref, rdf_dict_mlff, pair_list_ref,
                                   file_name='RDF_error')
         self.output_error_metrics(adf_ref, adf_dict_mlff, triplet_list_ref,

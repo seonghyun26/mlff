@@ -34,6 +34,7 @@ elif [ $outdata_type == "graph" ]; then
 
 rmax=$3
 maxneigh=$4
+OOD_FLAG=$5
 
 # Train/Valid/Test sets
 python preprocess.py \
@@ -47,12 +48,14 @@ python preprocess.py \
     --r-max $rmax \
     --max-neighbors $maxneigh \
 
-# OOD
-python preprocess.py \
-    --data ${DATADIR}/OOD.xyz \
-    --data-output-name ood \
-    --out-path ${OUTDIR}/ood \
-    --r-max $rmax \
-    --max-neighbors $maxneigh
+if [ $OOD_FLAG == "true" ]; then
+    # OOD
+    python preprocess.py \
+        --data ${DATADIR}/OOD.xyz \
+        --data-output-name ood \
+        --out-path ${OUTDIR}/ood \
+        --r-max $rmax \
+        --max-neighbors $maxneigh
+fi
 
 fi

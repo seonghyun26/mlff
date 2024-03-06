@@ -1,0 +1,74 @@
+evaluation_metric: distribution_functions
+
+# ai_md_traj:
+#   path: datasets/HfO_eval/dfs/monoclinic_1200K/OUTCAR
+#   format: vasp-out
+#   index: 1000:1999:20  # optional
+#   n_extend: 2
+#   out_identifier: 3ps_to_6ps_every_0.06ps
+
+ai_md_dfs_results:
+  rdf_path: datasets/HfO_eval/dfs/monoclinic_1200K/RDF_AIMD_3ps_to_6ps_every_0.06ps.csv
+  adf_path: datasets/HfO_eval/dfs/monoclinic_1200K/ADF_AIMD_3ps_to_6ps_every_0.06ps.csv
+
+mlff_md_traj:
+  BPNN:
+    path: eval_results/HfO/mlff_trajectories/BPNN/monoclinic_1200K/md_sim_2023/atoms.traj
+    format: traj
+    index: 50:100   # optional, if not provided, consider all ranges (":")
+    n_extend: 2
+    out_identifier: 3ps_to_6ps_every_0.06ps
+  SchNet:  
+    path: eval_results/HfO/mlff_trajectories/SchNet/monoclinic_1200K/md_sim_2023/atoms.traj
+    format: traj
+    index: 50:100   # optional, if not provided, consider all ranges (":")
+    n_extend: 2
+    out_identifier: 3ps_to_6ps_every_0.06ps
+  DimeNet++:  
+    path: eval_results/HfO/mlff_trajectories/DimeNet++/monoclinic_1200K/md_sim_2023/atoms.traj
+    format: traj
+    index: 50:100   # optional, if not provided, consider all ranges (":")
+    n_extend: 2
+    out_identifier: 3ps_to_6ps_every_0.06ps
+  GemNet-T:  
+    path: eval_results/HfO/mlff_trajectories/GemNet-T/monoclinic_1200K/md_sim_2023/atoms.traj
+    format: traj
+    index: 50:100   # optional, if not provided, consider all ranges (":")
+    n_extend: 2
+    out_identifier: 3ps_to_6ps_every_0.06ps
+  GemNet-dT:  
+    path: eval_results/HfO/mlff_trajectories/GemNet-dT/monoclinic_1200K/md_sim_2023/atoms.traj
+    format: traj
+    index: 50:100   # optional, if not provided, consider all ranges (":")
+    n_extend: 2
+    out_identifier: 3ps_to_6ps_every_0.06ps
+  NequIP:  
+    path: eval_results/HfO/mlff_trajectories/NequIP/monoclinic_1200K/md_sim_2023/atoms.traj
+    format: traj
+    index: 50:100   # optional, if not provided, consider all ranges (":")
+    n_extend: 2
+    out_identifier: 3ps_to_6ps_every_0.06ps
+  Allegro:
+    path: eval_results/HfO/mlff_trajectories/Allegro/monoclinic_1200K/md_sim_2023/atoms.traj
+    format: traj
+    index: 50:100   # optional, if not provided, consider all ranges (":")
+    n_extend: 2
+    out_identifier: 3ps_to_6ps_every_0.06ps
+  MACE:  
+    path: eval_results/HfO/mlff_trajectories/MACE/monoclinic_1200K/md_sim_2023/atoms.traj
+    format: traj
+    index: 50:100   # optional, if not provided, consider all ranges (":")
+    n_extend: 2
+    out_identifier: 3ps_to_6ps_every_0.06ps
+  SCN:  
+    path: eval_results/HfO/mlff_trajectories/SCN/monoclinic_1200K/md_sim_2023/atoms.traj
+    format: traj
+    index: 50:100   # optional, if not provided, consider all ranges (":")
+    n_extend: 2
+    out_identifier: 3ps_to_6ps_every_0.06ps
+
+res_out_dir: eval_results/HfO/dfs/monoclinic_1200K/
+
+r_max_rdf: 6.0
+dr_rdf: 0.05
+r_max_adf: 5.0

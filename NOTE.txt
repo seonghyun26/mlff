@@ -1,0 +1,14 @@
+BEST CHECKPOINT
+../../train_results/HfO/NequIP/checkpoints/train-20240226_071148/best_checkpoint.pt
+
+DATA LMDB
+OOD
+../../datasets/HfO/ood/atom_graph_rmax6.0_maxneighbor50/ood.lmdb
+TEST
+../../datasets/HfO/atom_graph_rmax6.0_maxneighbor50/test.lmdb
+
+DATA xyz
+OOD
+../../datasets/HfO/OOD.xyz
+TEST
+../../datasets/HfO/Testset.xyz

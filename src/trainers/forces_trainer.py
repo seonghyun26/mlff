@@ -163,15 +163,6 @@ class ForcesTrainer(BaseTrainer):
         )
 
     def train(self):
-        # NOTE: wandb init
-        current_datetime = datetime.datetime.now()
-        current_datetime_str = current_datetime.strftime("%Y%m%d-%H:%M:%S-")
-        wandb.init(
-            project="mlff",
-            entity="eddy26",
-            group=current_datetime_str+"NequIP",
-            config=self.config,
-        )
         start_train_time = time.time()
         
         ensure_fitted(self._unwrapped_model, warn=True)
@@ -258,7 +249,7 @@ class ForcesTrainer(BaseTrainer):
                         self.logger.log(log_dict, step=self.step, split="train")
                     # wandb logging
                     wandb.log(
-                        log_dict,
+                        {"train/"+k: log_dict[k] for k in log_dict},
                         step=self.step
                     )
 
@@ -273,6 +264,10 @@ class ForcesTrainer(BaseTrainer):
                     if self.val_loader is not None:
                         val_metrics = self.validate(split="val")
                         self.update_best(primary_metric, val_metrics)
+                        wandb.log(
+                            {"val/"+k: val_metrics[k]["metric"] for k in val_metrics},
+                            step=self.step
+                        )
 
                 if self.scheduler.scheduler_type == "ReduceLROnPlateau":
                     if self.step % eval_every == 0:

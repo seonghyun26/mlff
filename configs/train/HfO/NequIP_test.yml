@@ -80,7 +80,7 @@ optim:
   batch_size: 16 
   eval_batch_size: 16
   num_workers: 2
-  max_epochs: 200
+  max_epochs: 20
 
   optimizer: Adam
   optimizer_params: {"amsgrad": False}
@@ -98,8 +98,14 @@ optim:
   # MAE-based loss
   #loss_energy: energy_per_atom_mae
   #loss_force: l2mae
-
-wandb: True
+  # eval_every: 260
 
 active:
-  use: False
+  use: True
+  init_method: random
+  init_size: 0.05
+  add_method: random
+  add_size: 0.05
+  rounds: 9
+
+wandb: True

@@ -68,12 +68,15 @@ from src.common.utils import new_trainer_context, new_evaluator_context
 import wandb
 import datetime
 
+TAGS = ["debug"]
+
+
 class Runner(submitit.helpers.Checkpointable):
     def __init__(self):
         self.config = None
 
     def __call__(self, config):
-        if config["mode"] in ["train", "validate", "fit-scale", "train_al"]:
+        if config["mode"] in ["train", "validate", "fit-scale", "train-al"]:
             with new_trainer_context(args=args, config=config) as ctx:
                 self.config = ctx.config
                 self.trainer = ctx.trainer
@@ -104,20 +107,23 @@ if __name__ == "__main__":
     parser = benchmark_flags.get_parser()
     args, override_args = parser.parse_known_args()
 
-    if args.mode in ["train", "validate", "fit-scale", "train_al"]:
+    if args.mode in ["train", "validate", "fit-scale", "train-al"]:
         config = build_config(args, override_args)
         config = add_benchmark_config(config, args)
         config = add_benchmark_validate_config(config, args)
         config = add_benchmark_fit_scale_config(config, args)
+        
         # NOTE: wandb init
-        current_datetime = datetime.datetime.now()
-        current_datetime_str = current_datetime.strftime("%m%d-%H:%M-")
-        wandb.init(
-            project="mlff",
-            entity="eddy26",
-            group=current_datetime_str+"NequIP",
-            config=config,
-        )
+        if config.get("wandb", False):
+            current_datetime = datetime.datetime.now()
+            current_datetime_str = current_datetime.strftime("%m%d-%H:%M-")
+            wandb.init(
+                project="mlff",
+                entity="eddy26",
+                group=current_datetime_str+config["model"]["name"],
+                config=config,
+                tags=TAGS
+            )
     elif args.mode == "run-md":
         config = build_run_md_config(args)
     elif args.mode == "evaluate":

@@ -171,6 +171,7 @@ class BaseTrainer(ABC):
             "slurm": config["slurm"],
             "noddp": config["noddp"],
             "save_ckpt_every_epoch": config["save_ckpt_every_epoch"],
+            "wandb": config["wandb"]
         }
 
         # set data configuration style
@@ -196,7 +197,10 @@ class BaseTrainer(ABC):
                 trainer_config["normalizer"] = dataset.get("normalize", {})
         else:
             trainer_config["dataset"] = dataset
-            
+        
+        # Add active learning configs
+        trainer_config["active"] = config["active"] if config.get("active", False) else False
+        
         return trainer_config
 
     def _inititiate(self):

@@ -27,7 +27,7 @@ class BenchmarkFlags(Flags):
         # we modify argument options defined in Flags of OCP
         for action in self.parser._actions:
             if action.dest == "mode":
-                action.choices = ["fit-scale", "train", "validate", "run-md", "evaluate"]
+                action.choices = ["fit-scale", "train", "validate", "run-md", "evaluate", "train-al"]
             if action.dest == "config_yml":
                 action.required = False
 

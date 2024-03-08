@@ -207,6 +207,13 @@ class ForcesTrainer(BaseTrainer):
             skip_steps = self.step % len(self.train_loader)
             train_loader_iter = iter(self.train_loader)
 
+            # NOTE: Pilot test for various train loader size
+            temp_batch_num = len(self.train_loader) * ( epoch_int * 10 // self.config["optim"]["max_epochs"] ) // 10 + 1
+            temp_batch_num = len(self.train_loader)  if temp_batch_num > len(self.train_loader) else temp_batch_num
+            
+            # for i in range(skip_steps, len(self.train_loader)):
+                # self.epoch = epoch_int + (i + 1) / len(self.train_loader)
+                # self.step = epoch_int * len(self.train_loader) + i + 1
             for i in range(skip_steps, len(self.train_loader)):
                 self.epoch = epoch_int + (i + 1) / len(self.train_loader)
                 self.step = epoch_int * len(self.train_loader) + i + 1

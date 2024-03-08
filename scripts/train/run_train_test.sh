@@ -1,5 +1,7 @@
 #!/bin/bash
 
+GPU=$1
+# GPU=6
 
 MODEL_ARRAY=(
     "BPNN"
@@ -12,32 +14,29 @@ MODEL_ARRAY=(
     "MACE"
     "SCN"
 )
+# MODEL=$2
+MODEL=NequIP_test
 
 DATA_ARRAY=(
     "SiN"
     "HfO"
 )
+# DATA=$3
+DATA=HfO
 
 BENCHMARK_HOME=$(realpath ../../)
 cd $BENCHMARK_HOME
-
-MODEL="NequIP"
-DATA="HfO"
 
 CONFIG=configs/train/${DATA}/${MODEL}.yml
 RUNDIR=train_results/${DATA}/${MODEL}
 RUNID=train
 
-# GPU="0,1,2,3,4,5,6,7"
-# NUMGPUS=8
-GPU="1,2,3,4,5,6"
-NUMGPUS=6
-CUDA_VISIBLE_DEVICES=$GPU python -m torch.distributed.launch --nproc_per_node=$NUMGPUS main.py \
-    --distributed \
-    --num-gpus $NUMGPUS \
+CUDA_VISIBLE_DEVICES=$GPU python main.py \
     --mode train \
     --config-yml $CONFIG \
     --run-dir $RUNDIR \
     --identifier $RUNID \
     --print-every 100 \
     --save-ckpt-every-epoch 20 \
+
+

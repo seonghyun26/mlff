@@ -162,6 +162,40 @@ class ForcesTrainer(BaseTrainer):
             training_state=False,
         )
 
+    # NOTE: init al dataset using the specified method
+    def init_al_dataset(self):
+        if self.config["active"]["init_method"] == "random":
+            self.al_dataset_idx = torch.randperm(len(self.org_train_loader))
+        # elif self.config["active"]["init_method"] == "something":
+        #     raise NotImplementedError(f"Active learning method {self.config['active']['init_method']} is not supported yet")
+        else:
+            raise NotImplementedError(f"Active learning method {self.config['active']['init_method']} is not supported yet")
+        
+        self.al_dataset_start_size = int(self.org_dataset_size * self.config["active"]["init_size"])
+        self.al_dataset_update_size = int(self.org_dataset_size * self.config["active"]["add_size"])
+    
+    # NOTE: update al dataset using the specified method
+    def update_al_dataset(self, round_current):
+        self.train_dataset_subset = torch.utils.data.Subset(
+            self.train_dataset,
+            self.al_dataset_idx[
+                :self.al_dataset_start_size + 
+                round_current * self.al_dataset_update_size
+            ]
+        )
+        self.train_sampler_subset = self.get_sampler(
+            dataset=self.train_dataset_subset,
+            batch_size=self.train_local_batch_size,
+            shuffle=True, 
+        )
+        self.train_loader = self.get_dataloader(
+            dataset=self.train_dataset_subset,
+            sampler=self.train_sampler_subset,
+            collater=self.parallel_collater,
+        )
+        
+        self.al_dataset_size = len(self.train_loader.dataset)
+    
     def train(self):
         start_train_time = time.time()
         
@@ -187,110 +221,249 @@ class ForcesTrainer(BaseTrainer):
             primary_metric = self.primary_metric
         self.metrics = {}
         
-        # Calculate start_epoch from step instead of loading the epoch number
-        # to prevent inconsistencies due to different batch size in checkpoint.
-        start_epoch = self.step // len(self.train_loader)
-        for epoch_int in range(start_epoch, self.config["optim"]["max_epochs"]):
-            start_epoch_time = time.time()
-            self.train_sampler.set_epoch(epoch_int) # shuffle
-            skip_steps = self.step % len(self.train_loader)
-            train_loader_iter = iter(self.train_loader)
+        # NOTE: Active learning training loop
+        if self.config["active"].get("use", False):
+            # Initialize the active learning dataset
+            self.train_local_batch_size = self.config["optim"]["batch_size"]
+            self.org_train_loader = self.train_loader
+            self.org_dataset_size = len(self.org_train_loader.dataset)
+            self.init_al_dataset()
 
-            for i in range(skip_steps, len(self.train_loader)):
-                self.epoch = epoch_int + (i + 1) / len(self.train_loader)
-                self.step = epoch_int * len(self.train_loader) + i + 1
-                self.model.train()
+            for round_current in range(0, self.config["active"]["rounds"]):
+                self.update_al_dataset(round_current)
+                eval_every = self.config["optim"].get(
+                    "eval_every", len(self.train_loader)
+                )
+                checkpoint_every = self.config["optim"].get(
+                    "checkpoint_every", eval_every
+                )
                 
-                # Get a batch.
-                batch = next(train_loader_iter)
-
-                # Forward, loss, backward.
-                with torch.cuda.amp.autocast(enabled=self.scaler is not None):
-                    out = self._forward(batch)
-                    loss = self._compute_loss(out, batch)
-                loss = self.scaler.scale(loss) if self.scaler else loss
-                self._backward(loss)
-                scale = self.scaler.get_scale() if self.scaler else 1.0
-
-                # Compute metrics.
-              
-                self.metrics = self._compute_metrics(
-                    out,
-                    batch,
-                    self.evaluator,
-                    self.metrics,
-                )
-
-                # update local metrics (which will be aggregated across all ranks at print_every steps)
-                self.metrics = self.evaluator.update(
-                    "loss", loss.item() / scale, self.metrics
-                )
-
-                if (self.step % self.config["cmd"]["print_every"] == 0 or
-                    self.step % len(self.train_loader) == 0
-                ):
-                    # 1) aggregate training results so far
-                    # 2) print logging
-                    # 3) reset metrics
-                    aggregated_metrics = self.evaluator.aggregate(self.metrics)
-
-                    log_dict = {k: aggregated_metrics[k]["metric"] for k in aggregated_metrics}
-                    log_dict.update(
-                        {
-                            "lr": self.scheduler.get_lr(),
-                            "epoch": self.epoch,
-                            "step": self.step,
-                        }
+                bm_logging.info(
+                    f">> Active learning {round_current+1} round active learning, \
+                    dataset size = {len(self.train_loader.dataset)}, \
+                    step: {self.step}"
                     )
-                    # stdout logging
-                    bm_logging.info("[train] " + parse_logs(log_dict))
-                    # logger logging
-                    if self.logger:
-                        self.logger.log(log_dict, step=self.step, split="train")
-                    # wandb logging
-                    wandb.log(
-                        {"train/"+k: log_dict[k] for k in log_dict},
-                        step=self.step
-                    )
+                
+                start_epoch = round_current * self.config["optim"]["max_epochs"]
+                for epoch_int in range(start_epoch, start_epoch + self.config["optim"]["max_epochs"]):
+                    start_epoch_time = time.time()
+                    self.train_sampler.set_epoch(epoch_int) # shuffle
+                    skip_steps = self.step % len(self.train_loader)
+                    train_loader_iter = iter(self.train_loader)            
 
-                    # reset metrics after logging
-                    self.metrics = {}
+                    for i in range(skip_steps, len(self.train_loader)):
+                        self.epoch = epoch_int + (i + 1) / len(self.train_loader)
+                        self.step = epoch_int * len(self.train_loader) + i + 1
+                        self.model.train()
+                        
+                        # Get a batch.
+                        batch = next(train_loader_iter)
 
-                if (checkpoint_every != -1 and self.step % checkpoint_every == 0):
-                    self.save(checkpoint_file="checkpoint.pt", training_state=True)
+                        # Forward, loss, backward.
+                        with torch.cuda.amp.autocast(enabled=self.scaler is not None):
+                            out = self._forward(batch)
+                            loss = self._compute_loss(out, batch)
+                        loss = self.scaler.scale(loss) if self.scaler else loss
+                        self._backward(loss)
+                        scale = self.scaler.get_scale() if self.scaler else 1.0
 
-                # Evaluate on val set every `eval_every` iterations.
-                if self.step % eval_every == 0:
-                    if self.val_loader is not None:
-                        val_metrics = self.validate(split="val")
-                        self.update_best(primary_metric, val_metrics)
-                        wandb.log(
-                            {"val/"+k: val_metrics[k]["metric"] for k in val_metrics},
-                            step=self.step
+                        # Compute metrics.
+                        self.metrics = self._compute_metrics(
+                            out,
+                            batch,
+                            self.evaluator,
+                            self.metrics,
                         )
 
-                if self.scheduler.scheduler_type == "ReduceLROnPlateau":
+                        # update local metrics (which will be aggregated across all ranks at print_every steps)
+                        self.metrics = self.evaluator.update(
+                            "loss", loss.item() / scale, self.metrics
+                        )
+
+                        if (self.step % self.config["cmd"]["print_every"] == 0 or
+                            self.step % len(self.train_loader) == 0
+                        ):
+                            # 1) aggregate training results so far
+                            # 2) print logging
+                            # 3) reset metrics
+                            aggregated_metrics = self.evaluator.aggregate(self.metrics)
+
+                            log_dict = {k: aggregated_metrics[k]["metric"] for k in aggregated_metrics}
+                            log_dict.update(
+                                {
+                                    "lr": self.scheduler.get_lr(),
+                                    "epoch": self.epoch,
+                                    "step": self.step,
+                                }
+                            )
+                            # stdout logging
+                            bm_logging.info("[train] " + parse_logs(log_dict))
+                            # logger logging
+                            if self.logger:
+                                self.logger.log(log_dict, step=self.step, split="train")
+                            
+                            # NOTE: wandb logging
+                            if self.config["wandb"]:
+                                wandb.log(
+                                    {
+                                        **{"train/"+k: log_dict[k] for k in log_dict}, 
+                                        **{
+                                            "train/active_expanded": round_current,
+                                            "train/active_dataset_size": len(self.train_loader.dataset),
+                                        }
+                                    },
+                                    step=self.step,
+                                )
+
+                            # reset metrics after logging
+                            self.metrics = {}
+
+                        if (checkpoint_every != -1 and self.step % checkpoint_every == 0):
+                            self.save(checkpoint_file="checkpoint.pt", training_state=True)
+
+                        # Evaluate on val set every `eval_every` iterations.
+                        if self.step % eval_every == 0:
+                            if self.val_loader is not None:
+                                val_metrics = self.validate(split="val")
+                                self.update_best(primary_metric, val_metrics)
+                                if self.config["wandb"]:
+                                    wandb.log(
+                                        {"val/"+k: val_metrics[k]["metric"] for k in val_metrics},
+                                        step=self.step
+                                    )
+
+                        if self.scheduler.scheduler_type == "ReduceLROnPlateau":
+                            if self.step % eval_every == 0:
+                                self.scheduler.step(metrics=val_metrics[primary_metric]["metric"])
+                        else:
+                            self.scheduler.step()
+
+                    torch.cuda.empty_cache()
+
+                    if checkpoint_every == -1:
+                        self.save(checkpoint_file="checkpoint.pt", training_state=True)
+                
+                    if (self.config["save_ckpt_every_epoch"] and 
+                        (epoch_int+1) % self.config["save_ckpt_every_epoch"] == 0
+                    ):
+                        # evaluation checkpoint (for benchmarking models during training)
+                        self.save(
+                            metrics=val_metrics,
+                            checkpoint_file=f"ckpt_ep{epoch_int+1}.pt",
+                            training_state=False,
+                        )
+
+                    bm_logging.info(f"{epoch_int+1} epoch elapsed time: {time.time()-start_epoch_time:.1f} sec")
+                
+        # NOTE: Original training loop
+        else:
+            # Calculate start_epoch from step instead of loading the epoch number
+            # to prevent inconsistencies due to different batch size in checkpoint.
+            start_epoch = self.step // len(self.train_loader)
+            for epoch_int in range(start_epoch, self.config["optim"]["max_epochs"]):
+                start_epoch_time = time.time()
+                self.train_sampler.set_epoch(epoch_int) # shuffle
+                skip_steps = self.step % len(self.train_loader)
+                train_loader_iter = iter(self.train_loader)            
+
+                for i in range(skip_steps, len(self.train_loader)):
+                    self.epoch = epoch_int + (i + 1) / len(self.train_loader)
+                    self.step = epoch_int * len(self.train_loader) + i + 1
+                    self.model.train()
+                    
+                    # Get a batch.
+                    batch = next(train_loader_iter)
+
+                    # Forward, loss, backward.
+                    with torch.cuda.amp.autocast(enabled=self.scaler is not None):
+                        out = self._forward(batch)
+                        loss = self._compute_loss(out, batch)
+                    loss = self.scaler.scale(loss) if self.scaler else loss
+                    self._backward(loss)
+                    scale = self.scaler.get_scale() if self.scaler else 1.0
+
+                    # Compute metrics.
+                
+                    self.metrics = self._compute_metrics(
+                        out,
+                        batch,
+                        self.evaluator,
+                        self.metrics,
+                    )
+
+                    # update local metrics (which will be aggregated across all ranks at print_every steps)
+                    self.metrics = self.evaluator.update(
+                        "loss", loss.item() / scale, self.metrics
+                    )
+
+                    if (self.step % self.config["cmd"]["print_every"] == 0 or
+                        self.step % len(self.train_loader) == 0
+                    ):
+                        # 1) aggregate training results so far
+                        # 2) print logging
+                        # 3) reset metrics
+                        aggregated_metrics = self.evaluator.aggregate(self.metrics)
+
+                        log_dict = {k: aggregated_metrics[k]["metric"] for k in aggregated_metrics}
+                        log_dict.update(
+                            {
+                                "lr": self.scheduler.get_lr(),
+                                "epoch": self.epoch,
+                                "step": self.step,
+                            }
+                        )
+                        # stdout logging
+                        bm_logging.info("[train] " + parse_logs(log_dict))
+                        # logger logging
+                        if self.logger:
+                            self.logger.log(log_dict, step=self.step, split="train")
+                        
+                        # NOTE: wandb logging
+                        if self.config["wandb"]:
+                            wandb.log(
+                                {"train/"+k: log_dict[k] for k in log_dict},
+                                step=self.step,
+                            )
+
+                        # reset metrics after logging
+                        self.metrics = {}
+
+                    if (checkpoint_every != -1 and self.step % checkpoint_every == 0):
+                        self.save(checkpoint_file="checkpoint.pt", training_state=True)
+
+                    # Evaluate on val set every `eval_every` iterations.
                     if self.step % eval_every == 0:
-                        self.scheduler.step(metrics=val_metrics[primary_metric]["metric"])
-                else:
-                    self.scheduler.step()
+                        if self.val_loader is not None:
+                            val_metrics = self.validate(split="val")
+                            self.update_best(primary_metric, val_metrics)
+                            if self.config["wandb"]:
+                                wandb.log(
+                                    {"val/"+k: val_metrics[k]["metric"] for k in val_metrics},
+                                    step=self.step
+                                )
 
-            torch.cuda.empty_cache()
+                    if self.scheduler.scheduler_type == "ReduceLROnPlateau":
+                        if self.step % eval_every == 0:
+                            self.scheduler.step(metrics=val_metrics[primary_metric]["metric"])
+                    else:
+                        self.scheduler.step()
 
-            if checkpoint_every == -1:
-                self.save(checkpoint_file="checkpoint.pt", training_state=True)
-        
-            if (self.config["save_ckpt_every_epoch"] and 
-                (epoch_int+1) % self.config["save_ckpt_every_epoch"] == 0
-            ):
-                # evaluation checkpoint (for benchmarking models during training)
-                self.save(
-                    metrics=val_metrics,
-                    checkpoint_file=f"ckpt_ep{epoch_int+1}.pt",
-                    training_state=False,
-                )
+                torch.cuda.empty_cache()
 
-            bm_logging.info(f"{epoch_int+1} epoch elapsed time: {time.time()-start_epoch_time:.1f} sec")
+                if checkpoint_every == -1:
+                    self.save(checkpoint_file="checkpoint.pt", training_state=True)
+            
+                if (self.config["save_ckpt_every_epoch"] and 
+                    (epoch_int+1) % self.config["save_ckpt_every_epoch"] == 0
+                ):
+                    # evaluation checkpoint (for benchmarking models during training)
+                    self.save(
+                        metrics=val_metrics,
+                        checkpoint_file=f"ckpt_ep{epoch_int+1}.pt",
+                        training_state=False,
+                    )
+
+                bm_logging.info(f"{epoch_int+1} epoch elapsed time: {time.time()-start_epoch_time:.1f} sec")
 
         train_elapsed_time = time.time()-start_train_time
         bm_logging.info(f"train() elapsed time: {train_elapsed_time:.1f} sec")
@@ -303,7 +476,8 @@ class ForcesTrainer(BaseTrainer):
             self.logger.log_final_metrics(metric_table, train_elapsed_time)
 
         # end procedure of train()
-        wandb.finish()
+        if self.config["wandb"]:
+            wandb.finish()
         self._end_train()
 
     def _forward(self, batch_list):

@@ -162,27 +162,57 @@ class ForcesTrainer(BaseTrainer):
             training_state=False,
         )
 
-    # NOTE: init al dataset using the specified method
     def init_al_dataset(self):
         if self.config["active"]["init_method"] == "random":
-            self.al_dataset_idx = torch.randperm(len(self.org_train_loader))
+            self.al_dataset_rand_idx = torch.randperm(len(self.org_train_loader.dataset))
+            self.al_dataset_reamining_idx = self.al_dataset_rand_idx
+        # NOTE: Add other active learning methods later on
         # elif self.config["active"]["init_method"] == "something":
         #     raise NotImplementedError(f"Active learning method {self.config['active']['init_method']} is not supported yet")
         else:
             raise NotImplementedError(f"Active learning method {self.config['active']['init_method']} is not supported yet")
         
         self.al_dataset_start_size = int(self.org_dataset_size * self.config["active"]["init_size"])
-        self.al_dataset_update_size = int(self.org_dataset_size * self.config["active"]["add_size"])
-    
-    # NOTE: update al dataset using the specified method
-    def update_al_dataset(self, round_current):
+        self.al_dataset_update_size = int(self.org_dataset_size * self.config["active"]["update_size"])
+        
         self.train_dataset_subset = torch.utils.data.Subset(
             self.train_dataset,
-            self.al_dataset_idx[
-                :self.al_dataset_start_size + 
-                round_current * self.al_dataset_update_size
-            ]
+            self.al_dataset_rand_idx[:new_dataset_size]
         )
+        self.train_sampler_subset = self.get_sampler(
+            dataset=self.train_dataset_subset,
+            batch_size=self.train_local_batch_size,
+            shuffle=True, 
+        )
+        self.train_loader = self.get_dataloader(
+            dataset=self.train_dataset_subset,
+            sampler=self.train_sampler_subset,
+            collater=self.parallel_collater,
+        )
+        
+        self.al_dataset_size = len(self.train_loader.dataset)
+    
+    def update_al_dataset(self, round_current):
+        # NOTE: Calculate how to update dataset
+        new_dataset_size = self.al_dataset_start_size + round_current * self.al_dataset_update_size
+        if self.config["active"]["update_method"] == "random":
+            self.al_dataset_reamining_idx = self.al_dataset_rand_idx[new_dataset_size:]
+            self.train_dataset_subset = torch.utils.data.Subset(
+                self.train_dataset,
+                self.al_dataset_rand_idx[:new_dataset_size]
+            )
+        elif self.config["active"]["update_method"] == "uncertainty":
+            print("To be implemented\n")
+            # TODO: pick highest uncertainty samples, and add them to the current dataset
+            # Add update_size samples to the current dataset
+            # self.train_dataset_subset = torch.utils.data.Subset(
+            #     self.train_dataset,
+            #     self.al_dataset_idx[:new_dataset_size]
+            # )
+        else:
+            raise NotImplementedError(f"Active learning method {self.config['active']['update_method']} is not supported yet")
+        
+        # NOTE: Config modified train loaders
         self.train_sampler_subset = self.get_sampler(
             dataset=self.train_dataset_subset,
             batch_size=self.train_local_batch_size,
@@ -228,30 +258,30 @@ class ForcesTrainer(BaseTrainer):
             self.org_train_loader = self.train_loader
             self.org_dataset_size = len(self.org_train_loader.dataset)
             self.init_al_dataset()
+            
+            previous_step = 0
 
             for round_current in range(0, self.config["active"]["rounds"]):
                 start_round_time = time.time()                
-                self.update_al_dataset(round_current)
                 eval_every = self.config["optim"].get("eval_every", len(self.train_loader))
                 checkpoint_every = self.config["optim"].get("checkpoint_every", eval_every)
                 
-                bm_logging.info(f">> Active learning {round_current+1} round active learning\n \
-                    - dataset update time = {time.time()-start_round_time:.1f} sec \
-                    - dataset size = {len(self.train_loader.dataset)} \
-                    - step: {self.step} \
-                ")
+                bm_logging.info(f">> Active learning {round_current+1} round active learning\n - dataset update time = {time.time()-start_round_time:.1f} sec \n - train loader size = {len(self.train_loader)}\n - dataset size = {len(self.train_loader.dataset)}\n - step: {self.step}\n")
                 
                 start_round_time = time.time()                
-                start_epoch = round_current * self.config["optim"]["max_epochs"]
+                # start_epoch = round_current * self.config["optim"]["max_epochs"]
+                start_epoch = 0
+                
                 for epoch_int in range(start_epoch, start_epoch + self.config["optim"]["max_epochs"]):
                     start_epoch_time = time.time()
                     self.train_sampler.set_epoch(epoch_int) # shuffle
-                    skip_steps = self.step % len(self.train_loader)
+                    # skip_steps = self.step % len(self.train_loader)
+                    skip_steps = 0
                     train_loader_iter = iter(self.train_loader)            
 
                     for i in range(skip_steps, len(self.train_loader)):
                         self.epoch = epoch_int + (i + 1) / len(self.train_loader)
-                        self.step = epoch_int * len(self.train_loader) + i + 1
+                        self.step = previous_step + epoch_int * len(self.train_loader) + i + 1
                         self.model.train()
                         
                         # Get a batch.
@@ -352,9 +382,12 @@ class ForcesTrainer(BaseTrainer):
                         )
 
                     bm_logging.info(f"{epoch_int+1} epoch elapsed time: {time.time()-start_epoch_time:.1f} sec")
-            
+
                 round_elapsed_time = time.time() - start_round_time
                 bm_logging.info(f"Round {round_current} elapsed time: {round_elapsed_time:.1f} sec")
+                
+                previous_step = self.step
+                self.update_al_dataset(round_current)
                 
             # Evaluation done on each round
             bm_logging.info(f'Performing the final evaluation for round {round_current}')

@@ -230,20 +230,18 @@ class ForcesTrainer(BaseTrainer):
             self.init_al_dataset()
 
             for round_current in range(0, self.config["active"]["rounds"]):
+                start_round_time = time.time()                
                 self.update_al_dataset(round_current)
-                eval_every = self.config["optim"].get(
-                    "eval_every", len(self.train_loader)
-                )
-                checkpoint_every = self.config["optim"].get(
-                    "checkpoint_every", eval_every
-                )
+                eval_every = self.config["optim"].get("eval_every", len(self.train_loader))
+                checkpoint_every = self.config["optim"].get("checkpoint_every", eval_every)
                 
-                bm_logging.info(
-                    f">> Active learning {round_current+1} round active learning, \
-                    dataset size = {len(self.train_loader.dataset)}, \
-                    step: {self.step}"
-                    )
+                bm_logging.info(f">> Active learning {round_current+1} round active learning\n \
+                    - dataset update time = {time.time()-start_round_time:.1f} sec \
+                    - dataset size = {len(self.train_loader.dataset)} \
+                    - step: {self.step} \
+                ")
                 
+                start_round_time = time.time()                
                 start_epoch = round_current * self.config["optim"]["max_epochs"]
                 for epoch_int in range(start_epoch, start_epoch + self.config["optim"]["max_epochs"]):
                     start_epoch_time = time.time()
@@ -354,7 +352,13 @@ class ForcesTrainer(BaseTrainer):
                         )
 
                     bm_logging.info(f"{epoch_int+1} epoch elapsed time: {time.time()-start_epoch_time:.1f} sec")
+            
+                round_elapsed_time = time.time() - start_round_time
+                bm_logging.info(f"Round {round_current} elapsed time: {round_elapsed_time:.1f} sec")
                 
+            # Evaluation done on each round
+            bm_logging.info(f'Performing the final evaluation for round {round_current}')
+            metric_table = self.create_metric_table(display_meV=True)
         # NOTE: Original training loop
         else:
             # Calculate start_epoch from step instead of loading the epoch number
@@ -421,7 +425,10 @@ class ForcesTrainer(BaseTrainer):
                         # NOTE: wandb logging
                         if self.config["wandb"]:
                             wandb.log(
-                                {"train/"+k: log_dict[k] for k in log_dict},
+                                {
+                                    **{"train/"+k: log_dict[k] for k in log_dict},
+                                    **{"train/dataset_size": {len(self.train_loader.dataset)}}
+                                },
                                 step=self.step,
                             )
 
@@ -466,7 +473,7 @@ class ForcesTrainer(BaseTrainer):
                 bm_logging.info(f"{epoch_int+1} epoch elapsed time: {time.time()-start_epoch_time:.1f} sec")
 
         train_elapsed_time = time.time()-start_train_time
-        bm_logging.info(f"train() elapsed time: {train_elapsed_time:.1f} sec")
+        bm_logging.info(f"training elapsed time: {train_elapsed_time:.1f} sec")
 
         # final evaluation
         bm_logging.info("Performing the final evaluation (last model)")

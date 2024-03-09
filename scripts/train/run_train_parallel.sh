@@ -32,7 +32,8 @@ RUNID=train
 # NUMGPUS=8
 GPU="1,2,3,4,5,6"
 NUMGPUS=6
-CUDA_VISIBLE_DEVICES=$GPU python -m torch.distributed.launch --nproc_per_node=$NUMGPUS main.py \
+# CUDA_VISIBLE_DEVICES=$GPU python -m torch.distributed.launch --nproc_per_node=$NUMGPUS main.py \
+CUDA_VISIBLE_DEVICES=$GPU torchrun --nproc_per_node=$NUMGPUS main.py \
     --distributed \
     --num-gpus $NUMGPUS \
     --mode train \

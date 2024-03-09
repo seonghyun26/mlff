@@ -98,7 +98,6 @@ optim:
   # MAE-based loss
   #loss_energy: energy_per_atom_mae
   #loss_force: l2mae
-  # eval_every: 260
 
 active:
   use: True

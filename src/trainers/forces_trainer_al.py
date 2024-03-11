@@ -197,7 +197,7 @@ class ForcesTrainer(BaseTrainer):
         self.metrics = {}
         
         
-        # TODO: add active learning here
+
         # Calculate start_epoch from step instead of loading the epoch number
         # to prevent inconsistencies due to different batch size in checkpoint.
         start_epoch = self.step // len(self.train_loader)

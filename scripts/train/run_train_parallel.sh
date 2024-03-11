@@ -21,7 +21,7 @@ DATA_ARRAY=(
 BENCHMARK_HOME=$(realpath ../../)
 cd $BENCHMARK_HOME
 
-MODEL="NequIP"
+MODEL=$1
 DATA="HfO"
 
 CONFIG=configs/train/${DATA}/${MODEL}.yml

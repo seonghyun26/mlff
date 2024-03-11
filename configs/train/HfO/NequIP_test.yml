@@ -80,7 +80,7 @@ optim:
   batch_size: 16 
   eval_batch_size: 16
   num_workers: 2
-  max_epochs: 50
+  max_epochs: 100
 
   optimizer: Adam
   optimizer_params: {"amsgrad": False}
@@ -102,9 +102,8 @@ optim:
 active:
   use: True
   init_method: random
-  init_size: 0.05
-  update_method: random
-  # add_method: uncertainty
+  init_size: 0.1
+  update_method: uncertainty
   update_size: 0.05
   rounds: 9
 

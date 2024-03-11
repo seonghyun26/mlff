@@ -164,20 +164,18 @@ class ForcesTrainer(BaseTrainer):
 
     def init_al_dataset(self):
         if self.config["active"]["init_method"] == "random":
-            self.al_dataset_rand_idx = torch.randperm(len(self.org_train_loader.dataset))
-            self.al_dataset_reamining_idx = self.al_dataset_rand_idx
-        # NOTE: Add other active learning methods later on
-        # elif self.config["active"]["init_method"] == "something":
-        #     raise NotImplementedError(f"Active learning method {self.config['active']['init_method']} is not supported yet")
+            self.al_dataset_init_idx = torch.randperm(len(self.org_train_loader.dataset))
+            self.al_dataset_remaining_idx = self.al_dataset_init_idx
+        elif self.config["active"]["init_method"] == "uncertinaty":
+            raise NotImplementedError(f"Active learning method {self.config['active']['init_method']} is not supported yet")
         else:
             raise NotImplementedError(f"Active learning method {self.config['active']['init_method']} is not supported yet")
-        
+            
         self.al_dataset_start_size = int(self.org_dataset_size * self.config["active"]["init_size"])
         self.al_dataset_update_size = int(self.org_dataset_size * self.config["active"]["update_size"])
-        
         self.train_dataset_subset = torch.utils.data.Subset(
             self.train_dataset,
-            self.al_dataset_rand_idx[:new_dataset_size]
+            self.al_dataset_init_idx[:self.al_dataset_start_size]
         )
         self.train_sampler_subset = self.get_sampler(
             dataset=self.train_dataset_subset,
@@ -189,26 +187,42 @@ class ForcesTrainer(BaseTrainer):
             sampler=self.train_sampler_subset,
             collater=self.parallel_collater,
         )
-        
         self.al_dataset_size = len(self.train_loader.dataset)
+        
+        if self.config["active"]["update_method"] == "uncertainty":
+            # NOTE: BIgger uncertinaty for smaller distance
+            bm_logging.info(f">> Active learning update method: {self.config['active']['update_method']}")
+            data_dist = []
+            for idx in tqdm(range(self.al_dataset_start_size, len(self.train_dataset) - self.al_dataset_start_size)):
+                data = self.train_dataset[idx]
+                pairwise_pos = data.pos[data.edge_index]
+                pariwise_dis_sum = torch.cdist(
+                    pairwise_pos[0,:,:].unsqueeze(1),
+                    pairwise_pos[1,:,:].unsqueeze(1)
+                ).squeeze()
+                data_dist.append(pariwise_dis_sum.sum().item())
+            data_dist_ordered = torch.tensor(data_dist).argsort() + self.al_dataset_start_size
+            self.al_dataset_remaining_idx = data_dist_ordered
+            
+            bm_logging.info(f"Done...!")
     
     def update_al_dataset(self, round_current):
         # NOTE: Calculate how to update dataset
         new_dataset_size = self.al_dataset_start_size + round_current * self.al_dataset_update_size
         if self.config["active"]["update_method"] == "random":
-            self.al_dataset_reamining_idx = self.al_dataset_rand_idx[new_dataset_size:]
             self.train_dataset_subset = torch.utils.data.Subset(
                 self.train_dataset,
-                self.al_dataset_rand_idx[:new_dataset_size]
+                self.al_dataset_init_idx[:new_dataset_size]
             )
         elif self.config["active"]["update_method"] == "uncertainty":
-            print("To be implemented\n")
-            # TODO: pick highest uncertainty samples, and add them to the current dataset
-            # Add update_size samples to the current dataset
-            # self.train_dataset_subset = torch.utils.data.Subset(
-            #     self.train_dataset,
-            #     self.al_dataset_idx[:new_dataset_size]
-            # )
+            new_dataset_idx = torch.concat([
+                self.al_dataset_init_idx[:self.al_dataset_start_size],
+                self.al_dataset_remaining_idx[:round_current * self.al_dataset_update_size]
+            ])
+            self.train_dataset_subset = torch.utils.data.Subset(
+                self.train_dataset,
+                new_dataset_idx
+            )
         else:
             raise NotImplementedError(f"Active learning method {self.config['active']['update_method']} is not supported yet")
         
@@ -308,7 +322,8 @@ class ForcesTrainer(BaseTrainer):
                             "loss", loss.item() / scale, self.metrics
                         )
 
-                        if (self.step % self.config["cmd"]["print_every"] == 0 or
+                        if (
+                            # self.step % self.config["cmd"]["print_every"] == 0 or
                             self.step % len(self.train_loader) == 0
                         ):
                             # 1) aggregate training results so far
@@ -389,9 +404,11 @@ class ForcesTrainer(BaseTrainer):
                 previous_step = self.step
                 self.update_al_dataset(round_current)
                 
-            # Evaluation done on each round
-            bm_logging.info(f'Performing the final evaluation for round {round_current}')
-            metric_table = self.create_metric_table(display_meV=True)
+                # Evaluation done on each round
+                bm_logging.info(f'Performing evaluation for round {round_current}')
+                metric_table = self.create_metric_table(display_meV=True)
+                bm_logging.info(f"\n{metric_table}")
+                
         # NOTE: Original training loop
         else:
             # Calculate start_epoch from step instead of loading the epoch number

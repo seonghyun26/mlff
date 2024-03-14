@@ -68,7 +68,7 @@ from src.common.utils import new_trainer_context, new_evaluator_context
 import wandb
 import datetime
 
-TAGS = ["debug"]
+TAGS = ["impl"]
 
 
 class Runner(submitit.helpers.Checkpointable):

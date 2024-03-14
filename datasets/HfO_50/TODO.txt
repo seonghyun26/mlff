@@ -1,3 +1,0 @@
-Sample 50% from training dataset
-
-Don't touch the others

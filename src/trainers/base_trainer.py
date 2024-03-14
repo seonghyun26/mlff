@@ -417,6 +417,44 @@ class BaseTrainer(ABC):
                     module=self.model, 
                     device_ids=[self.device],
                 )
+                
+    def reinit_model(self):
+        # Build model
+        bm_logging.info(f"Re-initializaing model: {self.config['model_name']}")
+        model_class = registry.get_model_class(self.config["model_name"])
+        self.model = model_class(
+            num_atoms = None, # useless
+            bond_feat_dim = None, # useless
+            num_targets = self.num_targets,
+            **self.config["model_attributes"],
+        ).to(self.device)
+
+        bm_logging.info(f"Loaded {self.model.__class__.__name__} with {self.model.num_params} parameters.")
+
+        if self.logger:
+            self.logger.watch(self.model)
+
+        # wrapping OCPDataParallel even when using single GPU
+        self.model = OCPDataParallel(
+            module=self.model,
+            output_device=self.device,
+            num_gpus=1 if not self.cpu else 0,
+        )
+        if distutils.initialized() and not self.config["noddp"]:
+            # wrapping pytorch DDP
+            if (self.config["model_name"]=='bpnn' 
+                or self.config["model_name"]=='allegro'
+            ):
+                self.model = DistributedDataParallel(
+                    module=self.model, 
+                    device_ids=[self.device],
+                    find_unused_parameters=True # it makes computation somewhat slow
+                )
+            else:
+                self.model = DistributedDataParallel(
+                    module=self.model, 
+                    device_ids=[self.device],
+                )
 
     def _set_loss(self):
         # initiate loss which is wrapped with DDPLoss in default
@@ -795,7 +833,16 @@ class BaseTrainer(ABC):
                 else:
                     table_row_metrics.append(f"{metrics[metric_name]['metric']:.1f}")
             table.add_row(table_row_metrics)
-
+            
+            # NOTE: wandb logging for the table
+            if self.config["wandb"] and dataname == "test":
+                # field_names, table_row_metrics
+                test_result = {dataname+"/"+field_names[i]: table_row_metrics[i] for i in range(len(field_names))}
+                test_result.pop("test/dataset")
+                test_result["round"] = self.round_current
+                test_result["step"] = self.step
+                wandb.log(test_result)
+        
         return table
 
     def _end_train(self):

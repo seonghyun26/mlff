@@ -1,5 +1,6 @@
 BEST CHECKPOINT
 ../../train_results/HfO/NequIP/checkpoints/train-20240226_071148/best_checkpoint.pt
+../../train_results/HfO/NequIP_test/checkpoints/train-/best_checkpoint.pt
 
 DATA LMDB
 OOD

@@ -56,6 +56,7 @@ from src.common.utils import bm_logging
 from src.common.logger import parse_logs
 from src.trainers.base_trainer import BaseTrainer
 from src.modules.normalizer import NormalizerPerAtom, log_and_check_normalizers
+from src.modules.scheduler import LRScheduler
 
 
 import wandb
@@ -165,17 +166,6 @@ class ForcesTrainer(BaseTrainer):
         )
     
     def set_al_dataset(self):
-        # self._inititiate()
-        # self._set_logger()
-        # self._set_datasets_and_generate_loaders_samplers()
-        # self._set_normalizer()
-        # self._set_task()
-        # self._set_loss()
-        # self._set_seed_from_config()
-        self._set_optimizer_and_lr_scheduler()
-        self._set_ema()
-        self._set_extras()
-        
         # NOTE: set train loader according ot al_dtaset_idx
         self.train_dataset_active = torch.utils.data.Subset(
             self.train_dataset,
@@ -191,40 +181,106 @@ class ForcesTrainer(BaseTrainer):
             sampler=self.train_sampler_active,
             collater=self.parallel_collater,
         )
-        self.al_dataset_size = len(self.train_loader.dataset)
+        self.config["optim"]["num_train"] = len(self.train_dataset_active)
+        
+        self._set_optimizer_and_lr_scheduler()
+        self._set_ema()
+        self._set_extras()
+        
     
     def init_al_dataset(self):
+        self.train_local_batch_size = self.config["optim"]["batch_size"]
+        self.org_train_loader = self.train_loader
+        self.org_dataset_size = len(self.org_train_loader.dataset)
         self.al_dataset_start_size = int(self.org_dataset_size * self.config["active"]["init_size"])
         self.al_dataset_update_size = int(self.org_dataset_size * self.config["active"]["update_size"])
-        self.al_dataset_size = self.al_dataset_start_size
         
         if self.config["active"]["init_method"] == "random":
             self.al_dataset_rand_idx = torch.randperm(len(self.org_train_loader.dataset))
             self.al_dataset_idx = self.al_dataset_rand_idx[:self.al_dataset_start_size]
             self.al_dataset_remaining_idx = self.al_dataset_rand_idx[self.al_dataset_start_size:]
         else:
-            raise NotImplementedError(f"Active learning method {self.config['active']['init_method']} is not supported yet")
+            raise NotImplementedError(f"Active learning initialization method {self.config['active']['init_method']} is not supported yet")
 
-        self.set_al_dataset()
-    
+        self.set_al_dataset()   
+        self.peratom_force_error = []
+        self.peratom_energy_error = []
     
     def update_al_dataset(self, round_current):
         if self.config["active"]["update_method"] == "random":
-            self.al_dataset_idx = self.al_dataset_rand_idx[:self.al_dataset_size+self.al_dataset_update_size]
-        elif self.config["active"]["update_method"] == "uncertainty1":
+            self.al_dataset_idx = self.al_dataset_rand_idx[:self.config["optim"]["num_train"]+self.al_dataset_update_size]
+        elif self.config["active"]["update_method"] == "mcdropout":
+            if self.config["active"].get("mcdropout", 0) == 0:
+                raise ValueError(f"MC dropout requires `update_param` to be set")
+            
             al_dataset_remaining_idx = self.al_dataset_remaining_idx
+            mc_dropout_num = self.config["active"]["mcdropout"]
             
-            # NOTE: temporary random picking from ramining test
-            test_idx = torch.randperm(len(al_dataset_remaining_idx))
+            # TODO: MCdropout uncertainty sampling
+            self.uncertainty_dataset = torch.utils.data.Subset(
+                self.train_dataset,
+                self.al_dataset_remaining_idx
+            )
+            self.train_sampler_uncertainty = self.get_sampler(
+                dataset=self.uncertainty_dataset,
+                batch_size=self.train_local_batch_size,
+                shuffle=True, 
+            )
+            self.train_loader = self.get_dataloader(
+                dataset=self.uncertainty_dataset,
+                sampler=self.train_sampler_uncertainty,
+                collater=self.parallel_collater,
+            )
+            predictions_energy = []
+            predictions_forces = []
+            prediction_energy_batch = []
+            prediction_forces_batch = []
+
+            loader = self.train_loader
+            ensure_fitted(self._unwrapped_model, warn=True)
+            rank = distutils.get_rank()
+            self.model.eval()
             
-            al_dataset_update_idx = al_dataset_remaining_idx[test_idx[:self.al_dataset_update_size]]
-            al_dataset_remaining_idx = al_dataset_remaining_idx[test_idx[self.al_dataset_update_size:]]
+            for i, batch in tqdm(
+                enumerate(loader),
+                total=len(loader),
+                position=rank,
+                desc="device {}, selecting samples for active learning".format(rank),
+                disable=False
+            ):
+                with torch.cuda.amp.autocast(enabled=self.scaler is not None):
+                    for _ in range(mc_dropout_num):
+                        out = self._forward(batch)
+                        prediction_energy_batch.append(out["energy"].detach().cpu())
+                    # predictions_energy.append(torch.var(prediction_energy_batch, axis=0))
+                    predictions_energy.append(torch.var(torch.stack(prediction_energy_batch), axis=0))
+                if i == 20:
+                    break
+            
+            # torch.cuda.empty_cache()
+            predictions_energy = torch.cat(predictions_energy)
+            selected_idx = torch.argsort(predictions_energy, descending=True)
+            
+            al_dataset_update_idx = al_dataset_remaining_idx[selected_idx[:self.al_dataset_update_size]]
+            al_dataset_remaining_idx = al_dataset_remaining_idx[selected_idx[self.al_dataset_update_size:]]
             
             new_dataset_idx = torch.concat([
                 self.al_dataset_idx,
                 al_dataset_update_idx
             ])
         else:
+            al_dataset_remaining_idx = self.al_dataset_remaining_idx
+            
+            # NOTE: temporary random picking from ramining test
+            selected_idx = torch.randperm(len(al_dataset_remaining_idx))
+            
+            al_dataset_update_idx = al_dataset_remaining_idx[selected_idx[:self.al_dataset_update_size]]
+            al_dataset_remaining_idx = al_dataset_remaining_idx[selected_idx[self.al_dataset_update_size:]]
+            
+            new_dataset_idx = torch.concat([
+                self.al_dataset_idx,
+                al_dataset_update_idx
+            ])
             raise NotImplementedError(f"Active learning method {self.config['active']['update_method']} is not supported yet")
         
         self.set_al_dataset()
@@ -232,19 +288,13 @@ class ForcesTrainer(BaseTrainer):
     def train(self):
         start_train_time = time.time()
         
+        # NOTE: Logging configuration
         ensure_fitted(self._unwrapped_model, warn=True)
         if self.logger:
             self.logger.log_model_training_info(self._unwrapped_model)
-
-        eval_every = self.config["optim"].get(
-            "eval_every", len(self.train_loader)
-        )
-        checkpoint_every = self.config["optim"].get(
-            "checkpoint_every", eval_every
-        )
-        primary_metric = self.config["task"].get(
-            "primary_metric", self.evaluator.task_primary_metric[self.task_name]
-        )
+        eval_every = self.config["optim"].get("eval_every", len(self.train_loader))
+        checkpoint_every = self.config["optim"].get("checkpoint_every", eval_every)
+        primary_metric = self.config["task"].get("primary_metric", self.evaluator.task_primary_metric[self.task_name])
         if (
             not hasattr(self, "primary_metric")
             or self.primary_metric != primary_metric
@@ -254,45 +304,31 @@ class ForcesTrainer(BaseTrainer):
             primary_metric = self.primary_metric
         self.metrics = {}
         
-        # NOTE: Active learning training loop
         if self.config["active"].get("use", False):
-            # Initialize the active learning dataset
-            self.train_local_batch_size = self.config["optim"]["batch_size"]
-            self.org_train_loader = self.train_loader
-            self.org_dataset_size = len(self.org_train_loader.dataset)
             self.init_al_dataset()
-            self.model_init = self.model
+            global_step = 0
             initial_weights = deepcopy(self.model.state_dict())
             
-            previous_step = 0
+            # NOTE: Active learning round loopZ
             for round_current in range(0, self.config["active"]["rounds"]):
-                # init_ckpt = self.save(
-                #     checkpoint_file=f"ckpt_ep0.pt",
-                #     training_state=False,
-                # )
                 eval_every = self.config["optim"].get("eval_every", len(self.train_loader))
                 checkpoint_every = self.config["optim"].get("checkpoint_every", eval_every)
                 if round_current != 0:
                     bm_logging.info(f"Model initiliazed to the initial weights")
                     self.model.load_state_dict(initial_weights)
-                              
                 bm_logging.info(f"\n>> Active learning - round {round_current} \n - dataset size: {len(self.train_loader.dataset)}\n - step: {self.step}")
                 
-                start_round_time = time.time()                
-                # start_epoch = round_current * self.config["optim"]["max_epochs"]
-                start_epoch = 0
-                
-                for epoch_int in range(start_epoch, start_epoch + self.config["optim"]["max_epochs"]):
-                    # self.load_checkpoint(init_ckpt)
+                start_round_time = time.time()
+                for epoch_int in range(0, self.config["optim"]["max_epochs"]):
+                    global_epoch = round_current * self.config["optim"]["max_epochs"] + epoch_int
                     start_epoch_time = time.time()
                     self.train_sampler.set_epoch(epoch_int) # shuffle
-                    # skip_steps = self.step % len(self.train_loader)
-                    skip_steps = 0
-                    train_loader_iter = iter(self.train_loader)            
+                    train_loader_iter = iter(self.train_loader)      
 
-                    for i in range(skip_steps, len(self.train_loader)):
+                    for i in range(0, len(self.train_loader)):
+                        self.global_epoch = global_epoch
                         self.epoch = epoch_int + (i + 1) / len(self.train_loader)
-                        self.step = previous_step + epoch_int * len(self.train_loader) + i + 1
+                        self.step = global_step + epoch_int * len(self.train_loader) + i + 1
                         self.model.train()
                         
                         # Get a batch.
@@ -320,7 +356,7 @@ class ForcesTrainer(BaseTrainer):
                         )
 
                         if (
-                            # self.step % self.config["cmd"]["print_every"] == 0 or
+                            self.step % self.config["cmd"]["print_every"] == 0 or
                             self.step % len(self.train_loader) == 0
                         ):
                             # 1) aggregate training results so far
@@ -341,8 +377,7 @@ class ForcesTrainer(BaseTrainer):
                             # logger logging
                             if self.logger:
                                 self.logger.log(log_dict, step=self.step, split="train")
-                            
-                            # NOTE: wandb logging
+                            # wandb logging
                             if self.config["wandb"]:
                                 wandb.log(
                                     {
@@ -350,6 +385,7 @@ class ForcesTrainer(BaseTrainer):
                                         **{
                                             "train/active_expanded": round_current,
                                             "train/active_dataset_size": len(self.train_loader.dataset),
+                                            "train/global_epoch": global_epoch
                                         }
                                     },
                                     step=self.step,
@@ -361,7 +397,7 @@ class ForcesTrainer(BaseTrainer):
                         if (checkpoint_every != -1 and self.step % checkpoint_every == 0):
                             self.save(checkpoint_file="checkpoint.pt", training_state=True)
 
-                        # Evaluate on val set every `eval_every` iterations.
+                        # Evaluate on val set every `eval_every` iterations. (Validation)
                         if self.step % eval_every == 0:
                             if self.val_loader is not None:
                                 val_metrics = self.validate(split="val")
@@ -397,17 +433,24 @@ class ForcesTrainer(BaseTrainer):
 
                 round_elapsed_time = time.time() - start_round_time
                 bm_logging.info(f"Round {round_current} elapsed time: {round_elapsed_time:.1f} sec")
+                self.save(
+                    metrics=val_metrics,
+                    checkpoint_file=f"ckpt_round{round_current}.pt",
+                    training_state=False,
+                )
                 
-                previous_step = self.step
+                # Evaluation done on each round
+                self.round_current = round_current
+                metric_table = self.create_metric_table(display_meV=True)
+                bm_logging.info(f'Evaluation for round {round_current}')
+                bm_logging.info(f"\n{metric_table}")
+                
+                # Active learning: update dataset for the next round
+                global_step = self.step
                 dataset_update_time = time.time()
                 self.update_al_dataset(round_current)
                 bm_logging.info(f"Dataset update time: {time.time()-dataset_update_time:.1f} sec")
                 
-                # Evaluation done on each round
-                bm_logging.info(f'Evaluation for round {round_current}')
-                self.round_current = round_current
-                metric_table = self.create_metric_table(display_meV=True)
-                bm_logging.info(f"\n{metric_table}")
                 
         # NOTE: Original training loop
         else:
@@ -621,6 +664,10 @@ class ForcesTrainer(BaseTrainer):
                 target=force_target,
             )
         loss.append(force_mult * force_loss)
+        
+        # NOTE: For analysis
+        # self.peratom_energy_error.append([self.loss_fn["energy"](input=out["energy"][i], target=energy_target[i], natoms=1, batch_size=batch_list[0].natoms.shape[0],).item() for i in range(0, energy_target.shape[0])])
+        # self.peratom_force_error.append([self.loss_fn["force"](input=out["forces"][i], target=force_target[i]).item() for i in range(0, force_target.shape[0])])
 
         if self.use_stress:
             # Stress loss

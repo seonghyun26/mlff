@@ -834,14 +834,15 @@ class BaseTrainer(ABC):
                     table_row_metrics.append(f"{metrics[metric_name]['metric']:.1f}")
             table.add_row(table_row_metrics)
             
-            # NOTE: wandb logging for the table
+            # NOTE: wandb logging for test results
             if self.config["wandb"] and dataname == "test":
                 # field_names, table_row_metrics
                 test_result = {dataname+"/"+field_names[i]: table_row_metrics[i] for i in range(len(field_names))}
                 test_result.pop("test/dataset")
                 test_result["round"] = self.round_current
-                test_result["step"] = self.step
-                wandb.log(test_result)
+                test_result = {k: float(v) for k, v in test_result.items()}
+                # test_result["step"] = self.step
+                wandb.log(test_result, step=self.step)
         
         return table
 

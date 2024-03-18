@@ -216,7 +216,7 @@ class ForcesTrainer(BaseTrainer):
             al_dataset_remaining_idx = self.al_dataset_remaining_idx
             mc_dropout_num = self.config["active"]["mcdropout"]
             
-            # TODO: MCdropout uncertainty sampling
+            # NOTE: MCdropout uncertainty sampling
             self.uncertainty_dataset = torch.utils.data.Subset(
                 self.train_dataset,
                 self.al_dataset_remaining_idx
@@ -260,14 +260,15 @@ class ForcesTrainer(BaseTrainer):
             # torch.cuda.empty_cache()
             predictions_energy = torch.cat(predictions_energy)
             selected_idx = torch.argsort(predictions_energy, descending=True)
-            
             al_dataset_update_idx = al_dataset_remaining_idx[selected_idx[:self.al_dataset_update_size]]
-            al_dataset_remaining_idx = al_dataset_remaining_idx[selected_idx[self.al_dataset_update_size:]]
-            
             new_dataset_idx = torch.concat([
                 self.al_dataset_idx,
                 al_dataset_update_idx
             ])
+            
+            self.al_dataset_idx = new_dataset_idx
+            self.al_dataset_remaining_idx = al_dataset_remaining_idx[selected_idx[self.al_dataset_update_size:]]
+            
         else:
             al_dataset_remaining_idx = self.al_dataset_remaining_idx
             

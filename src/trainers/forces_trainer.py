@@ -245,7 +245,8 @@ class ForcesTrainer(BaseTrainer):
                 for _ in range(mc_dropout_num):
                     out = self._forward(batch)
                     prediction_energy_batch.append(out["energy"].detach().cpu())
-                predictions_energy.append(torch.var(torch.stack(prediction_energy_batch), axis=0))
+                predictions_energy.append(torch.var(torch.stack(prediction_energy_batch, dim=0), axis=0))
+                prediction_energy_batch = []
         
         # torch.cuda.empty_cache()
         predictions_energy = torch.cat(predictions_energy)
@@ -264,6 +265,12 @@ class ForcesTrainer(BaseTrainer):
             self.al_dataset_idx = self.al_dataset_rand_idx[:self.config["optim"]["num_train"]+self.al_dataset_update_size]
         elif self.config["active"]["update_method"] == "mcdropout":
             self.uncertainty_mcdropout()
+        elif self.config["active"]["update_method"] == "evidential":
+            raise NotImplementedError(f"Active learning method {self.config['active']['update_method']} is not supported yet")
+        elif self.config["active"]["update_method"] == "gaussian":
+            raise NotImplementedError(f"Active learning method {self.config['active']['update_method']} is not supported yet")
+        elif self.config["active"]["update_method"] == "lnk":
+            raise NotImplementedError(f"Active learning method {self.config['active']['update_method']} is not supported yet")
         else:
             raise NotImplementedError(f"Active learning method {self.config['active']['update_method']} is not supported yet")
         
@@ -272,7 +279,7 @@ class ForcesTrainer(BaseTrainer):
     def train(self):
         start_train_time = time.time()
         
-        # NOTE: Logging configuration
+        # Configurations
         ensure_fitted(self._unwrapped_model, warn=True)
         if self.logger:
             self.logger.log_model_training_info(self._unwrapped_model)
@@ -288,6 +295,7 @@ class ForcesTrainer(BaseTrainer):
             primary_metric = self.primary_metric
         self.metrics = {}
         
+        # NOTE: Active learning training loop
         if self.config["active"].get("use", False):
             self.init_al_dataset()
             global_step = 0
@@ -433,9 +441,17 @@ class ForcesTrainer(BaseTrainer):
                 global_step = self.step
                 dataset_update_time = time.time()
                 self.update_al_dataset(round_current)
-                bm_logging.info(f"Dataset update time: {time.time()-dataset_update_time:.1f} sec")
-                
-                
+                dataset_update_time = time.time()-dataset_update_time
+                bm_logging.info(f"Dataset update time: {dataset_update_time:.1f} sec")
+                if self.config["wandb"]:
+                    wandb.log(
+                        {
+                            "round": round_current,
+                            "active.dataset_update_time": dataset_update_time,
+                        },
+                        step=self.step,
+                    )
+                      
         # NOTE: Original training loop
         else:
             # Calculate start_epoch from step instead of loading the epoch number
@@ -499,7 +515,7 @@ class ForcesTrainer(BaseTrainer):
                         if self.logger:
                             self.logger.log(log_dict, step=self.step, split="train")
                         
-                        # NOTE: wandb logging
+                        # wandb logging
                         if self.config["wandb"]:
                             wandb.log(
                                 {

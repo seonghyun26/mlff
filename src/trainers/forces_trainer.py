@@ -187,7 +187,6 @@ class ForcesTrainer(BaseTrainer):
         self._set_ema()
         self._set_extras()
         
-    
     def init_al_dataset(self):
         self.train_local_batch_size = self.config["optim"]["batch_size"]
         self.org_train_loader = self.train_loader
@@ -206,82 +205,66 @@ class ForcesTrainer(BaseTrainer):
         self.peratom_force_error = []
         self.peratom_energy_error = []
     
+    def uncertainty_mcdropout(self):
+        if self.config["active"].get("mcdropout", 0) == 0:
+                raise ValueError(f"MC dropout requires `update_param` to be set")
+            
+        al_dataset_remaining_idx = self.al_dataset_remaining_idx
+        mc_dropout_num = self.config["active"]["mcdropout"]
+        
+        self.uncertainty_dataset = torch.utils.data.Subset(
+            self.train_dataset,
+            self.al_dataset_remaining_idx
+        )
+        self.train_sampler_uncertainty = self.get_sampler(
+            dataset=self.uncertainty_dataset,
+            batch_size=self.train_local_batch_size,
+            shuffle=True, 
+        )
+        self.train_loader = self.get_dataloader(
+            dataset=self.uncertainty_dataset,
+            sampler=self.train_sampler_uncertainty,
+            collater=self.parallel_collater,
+        )
+        predictions_energy = []
+        prediction_energy_batch = []
+
+        loader = self.train_loader
+        ensure_fitted(self._unwrapped_model, warn=True)
+        rank = distutils.get_rank()
+        self.model.eval()
+        
+        for i, batch in tqdm(
+            enumerate(loader),
+            total=len(loader),
+            position=rank,
+            desc="device {}, selecting samples for active learning".format(rank),
+            disable=False
+        ):
+            with torch.cuda.amp.autocast(enabled=self.scaler is not None):
+                for _ in range(mc_dropout_num):
+                    out = self._forward(batch)
+                    prediction_energy_batch.append(out["energy"].detach().cpu())
+                predictions_energy.append(torch.var(torch.stack(prediction_energy_batch), axis=0))
+        
+        # torch.cuda.empty_cache()
+        predictions_energy = torch.cat(predictions_energy)
+        selected_idx = torch.argsort(predictions_energy, descending=True)
+        al_dataset_update_idx = al_dataset_remaining_idx[selected_idx[:self.al_dataset_update_size]]
+        new_dataset_idx = torch.concat([
+            self.al_dataset_idx,
+            al_dataset_update_idx
+        ])
+        
+        self.al_dataset_idx = new_dataset_idx
+        self.al_dataset_remaining_idx = al_dataset_remaining_idx[selected_idx[self.al_dataset_update_size:]]
+    
     def update_al_dataset(self, round_current):
         if self.config["active"]["update_method"] == "random":
             self.al_dataset_idx = self.al_dataset_rand_idx[:self.config["optim"]["num_train"]+self.al_dataset_update_size]
         elif self.config["active"]["update_method"] == "mcdropout":
-            if self.config["active"].get("mcdropout", 0) == 0:
-                raise ValueError(f"MC dropout requires `update_param` to be set")
-            
-            al_dataset_remaining_idx = self.al_dataset_remaining_idx
-            mc_dropout_num = self.config["active"]["mcdropout"]
-            
-            # NOTE: MCdropout uncertainty sampling
-            self.uncertainty_dataset = torch.utils.data.Subset(
-                self.train_dataset,
-                self.al_dataset_remaining_idx
-            )
-            self.train_sampler_uncertainty = self.get_sampler(
-                dataset=self.uncertainty_dataset,
-                batch_size=self.train_local_batch_size,
-                shuffle=True, 
-            )
-            self.train_loader = self.get_dataloader(
-                dataset=self.uncertainty_dataset,
-                sampler=self.train_sampler_uncertainty,
-                collater=self.parallel_collater,
-            )
-            predictions_energy = []
-            predictions_forces = []
-            prediction_energy_batch = []
-            prediction_forces_batch = []
-
-            loader = self.train_loader
-            ensure_fitted(self._unwrapped_model, warn=True)
-            rank = distutils.get_rank()
-            self.model.eval()
-            
-            for i, batch in tqdm(
-                enumerate(loader),
-                total=len(loader),
-                position=rank,
-                desc="device {}, selecting samples for active learning".format(rank),
-                disable=False
-            ):
-                with torch.cuda.amp.autocast(enabled=self.scaler is not None):
-                    for _ in range(mc_dropout_num):
-                        out = self._forward(batch)
-                        prediction_energy_batch.append(out["energy"].detach().cpu())
-                    # predictions_energy.append(torch.var(prediction_energy_batch, axis=0))
-                    predictions_energy.append(torch.var(torch.stack(prediction_energy_batch), axis=0))
-                if i == 20:
-                    break
-            
-            # torch.cuda.empty_cache()
-            predictions_energy = torch.cat(predictions_energy)
-            selected_idx = torch.argsort(predictions_energy, descending=True)
-            al_dataset_update_idx = al_dataset_remaining_idx[selected_idx[:self.al_dataset_update_size]]
-            new_dataset_idx = torch.concat([
-                self.al_dataset_idx,
-                al_dataset_update_idx
-            ])
-            
-            self.al_dataset_idx = new_dataset_idx
-            self.al_dataset_remaining_idx = al_dataset_remaining_idx[selected_idx[self.al_dataset_update_size:]]
-            
+            self.uncertainty_mcdropout()
         else:
-            al_dataset_remaining_idx = self.al_dataset_remaining_idx
-            
-            # NOTE: temporary random picking from ramining test
-            selected_idx = torch.randperm(len(al_dataset_remaining_idx))
-            
-            al_dataset_update_idx = al_dataset_remaining_idx[selected_idx[:self.al_dataset_update_size]]
-            al_dataset_remaining_idx = al_dataset_remaining_idx[selected_idx[self.al_dataset_update_size:]]
-            
-            new_dataset_idx = torch.concat([
-                self.al_dataset_idx,
-                al_dataset_update_idx
-            ])
             raise NotImplementedError(f"Active learning method {self.config['active']['update_method']} is not supported yet")
         
         self.set_al_dataset()

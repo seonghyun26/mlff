@@ -120,8 +120,8 @@ if __name__ == "__main__":
             wandb.init(
                 project="mlff",
                 entity="eddy26",
-                # group=current_datetime_str+config["model"]["name"],
-                group="AL-mcdo",
+                group=current_datetime_str+config["model"]["name"],
+                # group="AL-mcdo",
                 config=config,
                 tags=TAGS
             )

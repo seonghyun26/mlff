@@ -207,9 +207,9 @@ class ForcesTrainer(BaseTrainer):
     
     def uncertainty_mcdropout(self):
         if self.config["active"].get("mcdropout", 0) == 0:
-                raise ValueError(f"MC dropout requires `update_param` to be set")
-            
-        al_dataset_remaining_idx = self.al_dataset_remaining_idx
+            raise ValueError(f"MC dropout requires `update_param` to be set")
+        elif len(self.al_dataset_remaining_idx) == 0:
+            raise ValueError(f"Remaining dataset is empty")
         mc_dropout_num = self.config["active"]["mcdropout"]
         
         self.uncertainty_dataset = torch.utils.data.Subset(
@@ -226,47 +226,61 @@ class ForcesTrainer(BaseTrainer):
             sampler=self.train_sampler_uncertainty,
             collater=self.parallel_collater,
         )
-        predictions_energy = []
-        prediction_energy_batch = []
 
-        loader = self.train_loader
         ensure_fitted(self._unwrapped_model, warn=True)
         rank = distutils.get_rank()
+        predictions_energy = []
         self.model.eval()
         
         for i, batch in tqdm(
-            enumerate(loader),
-            total=len(loader),
+            enumerate(self.train_loader),
+            total=len(self.train_loader),
             position=rank,
             desc="device {}, selecting samples for active learning".format(rank),
             disable=False
         ):
             with torch.cuda.amp.autocast(enabled=self.scaler is not None):
+                prediction_energy_batch = []
                 for _ in range(mc_dropout_num):
                     out = self._forward(batch)
                     prediction_energy_batch.append(out["energy"].detach().cpu())
-                predictions_energy.append(torch.var(torch.stack(prediction_energy_batch, dim=0), axis=0))
-                prediction_energy_batch = []
+                if len(prediction_energy_batch) > 0:
+                    variation = torch.var(torch.stack(prediction_energy_batch, dim=0), axis=0)
+                    if len(variation) > 0:
+                        predictions_energy.append()
+            
+            # if i == 40:
+            #     break
+
+        # if predictions_energy =:;
+        #     raise ValueError(f"MC dropout predictions are empty")
         
-        # torch.cuda.empty_cache()
+        print(len(predictions_energy))
+        print(len(self.al_dataset_idx))
+        print(len(self.al_dataset_remaining_idx))
+        print(self.org_dataset_size)
         predictions_energy = torch.cat(predictions_energy)
         selected_idx = torch.argsort(predictions_energy, descending=True)
-        al_dataset_update_idx = al_dataset_remaining_idx[selected_idx[:self.al_dataset_update_size]]
-        new_dataset_idx = torch.concat([
-            self.al_dataset_idx,
-            al_dataset_update_idx
-        ])
+        al_dataset_update_idx = self.al_dataset_remaining_idx[selected_idx[:self.al_dataset_update_size]]
+        self.al_dataset_idx = torch.concat([self.al_dataset_idx,al_dataset_update_idx])
+        self.al_dataset_remaining_idx = self.al_dataset_remaining_idx[selected_idx[self.al_dataset_update_size:]]
         
-        self.al_dataset_idx = new_dataset_idx
-        self.al_dataset_remaining_idx = al_dataset_remaining_idx[selected_idx[self.al_dataset_update_size:]]
+        if len(self.al_dataset_idx) + len(self.al_dataset_remaining_idx) != len(self.org_dataset_size):
+            print("Error, dataset index not matching")
+            print(len(self.al_dataset_idx))
+            print(len(self.al_dataset_remaining_idx))
+            print(self.org_dataset_size)
     
+    def uncertainty_evidential(self):
+        raise NotImplementedError(f"Active learning method {self.config['active']['update_method']} is not supported yet")
+        
     def update_al_dataset(self, round_current):
         if self.config["active"]["update_method"] == "random":
             self.al_dataset_idx = self.al_dataset_rand_idx[:self.config["optim"]["num_train"]+self.al_dataset_update_size]
         elif self.config["active"]["update_method"] == "mcdropout":
             self.uncertainty_mcdropout()
         elif self.config["active"]["update_method"] == "evidential":
-            raise NotImplementedError(f"Active learning method {self.config['active']['update_method']} is not supported yet")
+            self.uncertainty_evidential()
         elif self.config["active"]["update_method"] == "gaussian":
             raise NotImplementedError(f"Active learning method {self.config['active']['update_method']} is not supported yet")
         elif self.config["active"]["update_method"] == "lnk":
@@ -277,183 +291,30 @@ class ForcesTrainer(BaseTrainer):
         self.set_al_dataset()
     
     def train(self):
-        start_train_time = time.time()
-        
-        # Configurations
-        ensure_fitted(self._unwrapped_model, warn=True)
-        if self.logger:
-            self.logger.log_model_training_info(self._unwrapped_model)
-        eval_every = self.config["optim"].get("eval_every", len(self.train_loader))
-        checkpoint_every = self.config["optim"].get("checkpoint_every", eval_every)
-        primary_metric = self.config["task"].get("primary_metric", self.evaluator.task_primary_metric[self.task_name])
-        if (
-            not hasattr(self, "primary_metric")
-            or self.primary_metric != primary_metric
-        ):
-            self.best_val_metric = 1e9 if ("mae" in primary_metric or "mse" in primary_metric) else -1.0
-        else:
-            primary_metric = self.primary_metric
-        self.metrics = {}
-        
-        # NOTE: Active learning training loop
         if self.config["active"].get("use", False):
+            self.active_train()
+        else:
+            # Configurations
+            ensure_fitted(self._unwrapped_model, warn=True)
+            if self.logger:
+                self.logger.log_model_training_info(self._unwrapped_model)
+            eval_every = self.config["optim"].get("eval_every", len(self.train_loader))
+            checkpoint_every = self.config["optim"].get("checkpoint_every", eval_every)
+            primary_metric = self.config["task"].get("primary_metric", self.evaluator.task_primary_metric[self.task_name])
+            if (
+                not hasattr(self, "primary_metric")
+                or self.primary_metric != primary_metric
+            ):
+                self.best_val_metric = 1e9 if ("mae" in primary_metric or "mse" in primary_metric) else -1.0
+            else:
+                primary_metric = self.primary_metric
+            self.metrics = {}
+            
             self.init_al_dataset()
             global_step = 0
             initial_weights = deepcopy(self.model.state_dict())
+            start_train_time = time.time()
             
-            # NOTE: Active learning round loopZ
-            for round_current in range(0, self.config["active"]["rounds"]):
-                eval_every = self.config["optim"].get("eval_every", len(self.train_loader))
-                checkpoint_every = self.config["optim"].get("checkpoint_every", eval_every)
-                if round_current != 0:
-                    bm_logging.info(f"Model initiliazed to the initial weights")
-                    self.model.load_state_dict(initial_weights)
-                bm_logging.info(f"\n>> Active learning - round {round_current} \n - dataset size: {len(self.train_loader.dataset)}\n - step: {self.step}")
-                
-                start_round_time = time.time()
-                for epoch_int in range(0, self.config["optim"]["max_epochs"]):
-                    global_epoch = round_current * self.config["optim"]["max_epochs"] + epoch_int
-                    start_epoch_time = time.time()
-                    self.train_sampler.set_epoch(epoch_int) # shuffle
-                    train_loader_iter = iter(self.train_loader)      
-
-                    for i in range(0, len(self.train_loader)):
-                        self.global_epoch = global_epoch
-                        self.epoch = epoch_int + (i + 1) / len(self.train_loader)
-                        self.step = global_step + epoch_int * len(self.train_loader) + i + 1
-                        self.model.train()
-                        
-                        # Get a batch.
-                        batch = next(train_loader_iter)
-
-                        # Forward, loss, backward.
-                        with torch.cuda.amp.autocast(enabled=self.scaler is not None):
-                            out = self._forward(batch)
-                            loss = self._compute_loss(out, batch)
-                        loss = self.scaler.scale(loss) if self.scaler else loss
-                        self._backward(loss)
-                        scale = self.scaler.get_scale() if self.scaler else 1.0
-
-                        # Compute metrics.
-                        self.metrics = self._compute_metrics(
-                            out,
-                            batch,
-                            self.evaluator,
-                            self.metrics,
-                        )
-
-                        # update local metrics (which will be aggregated across all ranks at print_every steps)
-                        self.metrics = self.evaluator.update(
-                            "loss", loss.item() / scale, self.metrics
-                        )
-
-                        if (
-                            self.step % self.config["cmd"]["print_every"] == 0 or
-                            self.step % len(self.train_loader) == 0
-                        ):
-                            # 1) aggregate training results so far
-                            # 2) print logging
-                            # 3) reset metrics
-                            aggregated_metrics = self.evaluator.aggregate(self.metrics)
-
-                            log_dict = {k: aggregated_metrics[k]["metric"] for k in aggregated_metrics}
-                            log_dict.update(
-                                {
-                                    "lr": self.scheduler.get_lr(),
-                                    "epoch": self.epoch,
-                                    "step": self.step,
-                                }
-                            )
-                            # stdout logging
-                            bm_logging.info("[train] " + parse_logs(log_dict))
-                            # logger logging
-                            if self.logger:
-                                self.logger.log(log_dict, step=self.step, split="train")
-                            # wandb logging
-                            if self.config["wandb"]:
-                                wandb.log(
-                                    {
-                                        **{"train/"+k: log_dict[k] for k in log_dict}, 
-                                        **{
-                                            "train/active_expanded": round_current,
-                                            "train/active_dataset_size": len(self.train_loader.dataset),
-                                            "train/global_epoch": global_epoch
-                                        }
-                                    },
-                                    step=self.step,
-                                )
-
-                            # reset metrics after logging
-                            self.metrics = {}
-
-                        if (checkpoint_every != -1 and self.step % checkpoint_every == 0):
-                            self.save(checkpoint_file="checkpoint.pt", training_state=True)
-
-                        # Evaluate on val set every `eval_every` iterations. (Validation)
-                        if self.step % eval_every == 0:
-                            if self.val_loader is not None:
-                                val_metrics = self.validate(split="val")
-                                self.update_best(primary_metric, val_metrics)
-                                if self.config["wandb"]:
-                                    wandb.log(
-                                        {"val/"+k: val_metrics[k]["metric"] for k in val_metrics},
-                                        step=self.step
-                                    )
-
-                        if self.scheduler.scheduler_type == "ReduceLROnPlateau":
-                            if self.step % eval_every == 0:
-                                self.scheduler.step(metrics=val_metrics[primary_metric]["metric"])
-                        else:
-                            self.scheduler.step()
-
-                    torch.cuda.empty_cache()
-
-                    if checkpoint_every == -1:
-                        self.save(checkpoint_file="checkpoint.pt", training_state=True)
-                
-                    if (self.config["save_ckpt_every_epoch"] and 
-                        (epoch_int+1) % self.config["save_ckpt_every_epoch"] == 0
-                    ):
-                        # evaluation checkpoint (for benchmarking models during training)
-                        self.save(
-                            metrics=val_metrics,
-                            checkpoint_file=f"ckpt_ep{epoch_int+1}.pt",
-                            training_state=False,
-                        )
-
-                    bm_logging.info(f"{epoch_int+1} epoch elapsed time: {time.time()-start_epoch_time:.1f} sec")
-
-                round_elapsed_time = time.time() - start_round_time
-                bm_logging.info(f"Round {round_current} elapsed time: {round_elapsed_time:.1f} sec")
-                self.save(
-                    metrics=val_metrics,
-                    checkpoint_file=f"ckpt_round{round_current}.pt",
-                    training_state=False,
-                )
-                
-                # Evaluation done on each round
-                self.round_current = round_current
-                metric_table = self.create_metric_table(display_meV=True)
-                bm_logging.info(f'Evaluation for round {round_current}')
-                bm_logging.info(f"\n{metric_table}")
-                
-                # Active learning: update dataset for the next round
-                global_step = self.step
-                dataset_update_time = time.time()
-                self.update_al_dataset(round_current)
-                dataset_update_time = time.time()-dataset_update_time
-                bm_logging.info(f"Dataset update time: {dataset_update_time:.1f} sec")
-                if self.config["wandb"]:
-                    wandb.log(
-                        {
-                            "round": round_current,
-                            "active.dataset_update_time": dataset_update_time,
-                        },
-                        step=self.step,
-                    )
-                      
-        # NOTE: Original training loop
-        else:
             # Calculate start_epoch from step instead of loading the epoch number
             # to prevent inconsistencies due to different batch size in checkpoint.
             start_epoch = self.step // len(self.train_loader)
@@ -565,6 +426,195 @@ class ForcesTrainer(BaseTrainer):
 
                 bm_logging.info(f"{epoch_int+1} epoch elapsed time: {time.time()-start_epoch_time:.1f} sec")
 
+            train_elapsed_time = time.time()-start_train_time
+            bm_logging.info(f"training elapsed time: {train_elapsed_time:.1f} sec")
+
+            # final evaluation
+            bm_logging.info("Performing the final evaluation (last model)")
+            metric_table = self.create_metric_table(display_meV=True)
+            bm_logging.info(f"\n{metric_table}")
+            if self.logger:
+                self.logger.log_final_metrics(metric_table, train_elapsed_time)
+
+            # end procedure of train()
+            if self.config["wandb"]:
+                wandb.finish()
+            self._end_train()
+
+    def active_train(self):
+        # Configurations
+        ensure_fitted(self._unwrapped_model, warn=True)
+        if self.logger:
+            self.logger.log_model_training_info(self._unwrapped_model)
+        eval_every = self.config["optim"].get("eval_every", len(self.train_loader))
+        checkpoint_every = self.config["optim"].get("checkpoint_every", eval_every)
+        primary_metric = self.config["task"].get("primary_metric", self.evaluator.task_primary_metric[self.task_name])
+        if (
+            not hasattr(self, "primary_metric")
+            or self.primary_metric != primary_metric
+        ):
+            self.best_val_metric = 1e9 if ("mae" in primary_metric or "mse" in primary_metric) else -1.0
+        else:
+            primary_metric = self.primary_metric
+        self.metrics = {}
+        
+        self.init_al_dataset()
+        global_step = 0
+        initial_weights = deepcopy(self.model.state_dict())
+        start_train_time = time.time()
+        
+        
+        # NOTE: Active learning round loopZ
+        for round_current in range(0, self.config["active"]["rounds"]):
+            eval_every = self.config["optim"].get("eval_every", len(self.train_loader))
+            checkpoint_every = self.config["optim"].get("checkpoint_every", eval_every)
+            if round_current != 0:
+                bm_logging.info(f"Model initiliazed to the initial weights")
+                self.model.load_state_dict(initial_weights)
+            bm_logging.info(f"\n>> Active learning - round {round_current} \n - Current dataset size: {len(self.train_loader.dataset)}\n - Remaining dataset size: {len(self.al_dataset_remaining_idx)}\n - step: {self.step}")
+            
+            start_round_time = time.time()
+            for epoch_int in range(0, self.config["optim"]["max_epochs"]):
+                global_epoch = round_current * self.config["optim"]["max_epochs"] + epoch_int
+                start_epoch_time = time.time()
+                self.train_sampler.set_epoch(epoch_int) # shuffle
+                train_loader_iter = iter(self.train_loader)      
+
+                for i in range(0, len(self.train_loader)):
+                    self.global_epoch = global_epoch
+                    self.epoch = epoch_int + (i + 1) / len(self.train_loader)
+                    self.step = global_step + epoch_int * len(self.train_loader) + i + 1
+                    self.model.train()
+                    
+                    # Get a batch.
+                    batch = next(train_loader_iter)
+
+                    # Forward, loss, backward.
+                    with torch.cuda.amp.autocast(enabled=self.scaler is not None):
+                        out = self._forward(batch)
+                        loss = self._compute_loss(out, batch)
+                    loss = self.scaler.scale(loss) if self.scaler else loss
+                    self._backward(loss)
+                    scale = self.scaler.get_scale() if self.scaler else 1.0
+
+                    # Compute metrics.
+                    self.metrics = self._compute_metrics(
+                        out,
+                        batch,
+                        self.evaluator,
+                        self.metrics,
+                    )
+
+                    # update local metrics (which will be aggregated across all ranks at print_every steps)
+                    self.metrics = self.evaluator.update(
+                        "loss", loss.item() / scale, self.metrics
+                    )
+
+                    if (
+                        self.step % self.config["cmd"]["print_every"] == 0 or
+                        self.step % len(self.train_loader) == 0
+                    ):
+                        # 1) aggregate training results so far
+                        # 2) print logging
+                        # 3) reset metrics
+                        aggregated_metrics = self.evaluator.aggregate(self.metrics)
+
+                        log_dict = {k: aggregated_metrics[k]["metric"] for k in aggregated_metrics}
+                        log_dict.update(
+                            {
+                                "lr": self.scheduler.get_lr(),
+                                "epoch": self.epoch,
+                                "step": self.step,
+                            }
+                        )
+                        # stdout logging
+                        bm_logging.info("[train] " + parse_logs(log_dict))
+                        # logger logging
+                        if self.logger:
+                            self.logger.log(log_dict, step=self.step, split="train")
+                        # wandb logging
+                        if self.config["wandb"]:
+                            wandb.log(
+                                {
+                                    **{"train/"+k: log_dict[k] for k in log_dict}, 
+                                    **{
+                                        "train/active_expanded": round_current,
+                                        "train/active_dataset_size": len(self.train_loader.dataset),
+                                        "train/global_epoch": global_epoch
+                                    }
+                                },
+                                step=self.step,
+                            )
+
+                        # reset metrics after logging
+                        self.metrics = {}
+
+                    if (checkpoint_every != -1 and self.step % checkpoint_every == 0):
+                        self.save(checkpoint_file="checkpoint.pt", training_state=True)
+
+                    # Evaluate on val set every `eval_every` iterations. (Validation)
+                    if self.step % eval_every == 0:
+                        if self.val_loader is not None:
+                            val_metrics = self.validate(split="val")
+                            self.update_best(primary_metric, val_metrics)
+                            if self.config["wandb"]:
+                                wandb.log(
+                                    {"val/"+k: val_metrics[k]["metric"] for k in val_metrics},
+                                    step=self.step
+                                )
+
+                    if self.scheduler.scheduler_type == "ReduceLROnPlateau":
+                        if self.step % eval_every == 0:
+                            self.scheduler.step(metrics=val_metrics[primary_metric]["metric"])
+                    else:
+                        self.scheduler.step()
+
+                torch.cuda.empty_cache()
+
+                if checkpoint_every == -1:
+                    self.save(checkpoint_file="checkpoint.pt", training_state=True)
+            
+                if (self.config["save_ckpt_every_epoch"] and 
+                    (epoch_int+1) % self.config["save_ckpt_every_epoch"] == 0
+                ):
+                    # evaluation checkpoint (for benchmarking models during training)
+                    self.save(
+                        metrics=val_metrics,
+                        checkpoint_file=f"ckpt_ep{epoch_int+1}.pt",
+                        training_state=False,
+                    )
+
+                bm_logging.info(f"{epoch_int+1} epoch elapsed time: {time.time()-start_epoch_time:.1f} sec")
+
+            round_elapsed_time = time.time() - start_round_time
+            bm_logging.info(f"Round {round_current} elapsed time: {round_elapsed_time:.1f} sec")
+            self.save(
+                metrics=val_metrics,
+                checkpoint_file=f"ckpt_round{round_current}.pt",
+                training_state=False,
+            )
+            
+            # Evaluation done on each round
+            self.round_current = round_current
+            metric_table = self.create_metric_table(display_meV=True)
+            bm_logging.info(f'Evaluation for round {round_current}')
+            bm_logging.info(f"\n{metric_table}")
+            
+            # Active learning: update dataset for the next round
+            global_step = self.step
+            dataset_update_time = time.time()
+            self.update_al_dataset(round_current)
+            dataset_update_time = time.time()-dataset_update_time
+            bm_logging.info(f"Dataset update time: {dataset_update_time:.1f} sec")
+            if self.config["wandb"]:
+                wandb.log(
+                    {
+                        "round": round_current,
+                        "active.dataset_update_time": dataset_update_time,
+                    },
+                    step=self.step,
+                )
+        
         train_elapsed_time = time.time()-start_train_time
         bm_logging.info(f"training elapsed time: {train_elapsed_time:.1f} sec")
 
@@ -579,7 +629,7 @@ class ForcesTrainer(BaseTrainer):
         if self.config["wandb"]:
             wandb.finish()
         self._end_train()
-
+        
     def _forward(self, batch_list):
         _out = self.model(batch_list)
         # energy

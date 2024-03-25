@@ -101,7 +101,7 @@ optim:
 
 active:
   use: True
-  init_method: random
+  init_method: distance
   init_size: 0.1
   update_method: random
   update_size: 0.08

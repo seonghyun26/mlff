@@ -61,6 +61,7 @@ from src.modules.scheduler import LRScheduler
 
 import wandb
 import datetime
+import numpy as np
 
 from copy import deepcopy
 
@@ -166,7 +167,6 @@ class ForcesTrainer(BaseTrainer):
         )
     
     def set_al_dataset(self):
-        # NOTE: set train loader according to al_dtaset_idx
         self.train_dataset_active = torch.utils.data.Subset(
             self.train_dataset,
             self.al_dataset_idx
@@ -186,7 +186,36 @@ class ForcesTrainer(BaseTrainer):
         self._set_optimizer_and_lr_scheduler()
         self._set_ema()
         self._set_extras()
+    
+    def init_active_distance(self):
+        distance = []
+        pbar = tqdm(
+            range(self.org_dataset_size),
+            total=self.org_dataset_size,
+            desc="Atom-wise distance calculation for edges",
+        )
         
+        for idx in pbar:
+            data = self.train_dataset[idx]
+            pos = data.pos.to(self.device)
+            edge = data.edge_index.to(self.device)
+            node_pos_1 = pos[edge[0]].unsqueeze(1)
+            node_pos_2 = pos[edge[1]].unsqueeze(1)
+            data_distance = torch.cdist(node_pos_1, node_pos_2, p=2).squeeze().mean()
+            distance.append(data_distance)
+        
+        distance = torch.stack(distance)
+        idx_distance_descending = torch.argsort(distance, descending=False)
+        self.al_dataset_idx = idx_distance_descending[:self.al_dataset_start_size].to('cpu')
+        self.al_dataset_remaining_idx = set(idx_distance_descending[self.al_dataset_start_size:].tolist())
+        
+        if len(self.al_dataset_idx) + len(self.al_dataset_remaining_idx) != self.org_dataset_size:
+            print(len(self.al_dataset_idx))
+            print(len(self.al_dataset_remaining_idx))
+            print(self.org_dataset_size)
+            raise ValueError("Error, dataset index not matching")
+        return
+     
     def init_al_dataset(self):
         self.train_local_batch_size = self.config["optim"]["batch_size"]
         self.org_train_loader = self.train_loader
@@ -198,6 +227,8 @@ class ForcesTrainer(BaseTrainer):
             self.al_dataset_rand_idx = torch.randperm(len(self.org_train_loader.dataset))
             self.al_dataset_idx = self.al_dataset_rand_idx[:self.al_dataset_start_size]
             self.al_dataset_remaining_idx = set(self.al_dataset_rand_idx[self.al_dataset_start_size:].tolist())
+        elif self.config["active"]["init_method"] == "distance":
+            self.init_active_distance()
         else:
             raise NotImplementedError(f"Active learning initialization method {self.config['active']['init_method']} is not supported yet")
 
@@ -257,10 +288,11 @@ class ForcesTrainer(BaseTrainer):
         # if len(predictions_energy) != len(self.uncertainty_dataset):
         #     raise ValueError(f"Number of variance and dataset size are not matching")
         
-        print(len(predictions_energy))
-        print(len(self.al_dataset_idx))
-        print(len(al_dataset_update_idx))
-        print(self.org_dataset_size)
+        # DEUBG
+        # print(len(predictions_energy))
+        # print(len(self.al_dataset_idx))
+        # print(len(al_dataset_update_idx))
+        # print(self.org_dataset_size)
         
         self.al_dataset_idx = torch.concat([self.al_dataset_idx, torch.from_numpy(al_dataset_update_idx)])
         self.al_dataset_remaining_idx.difference_update(set(al_dataset_update_idx))
@@ -276,8 +308,12 @@ class ForcesTrainer(BaseTrainer):
         
     def update_al_dataset(self, round_current):
         if self.config["active"]["update_method"] == "random":
-            dataset_update_idx = self.config["optim"]["num_train"] + self.al_dataset_update_size
-            self.al_dataset_idx = self.al_dataset_rand_idx[:dataset_update_idx]
+            if self.config["active"]["init_method"] == "random":
+                dataset_update_idx = self.config["optim"]["num_train"] + self.al_dataset_update_size
+                self.al_dataset_idx = self.al_dataset_rand_idx[:dataset_update_idx]
+            else:
+                al_dataset_remaining_idx = self.al_dataset_remaining_idx
+                raise NotImplementedError(f"Active learning initialization method {self.config['active']['init_method']} is not supported yet")
         elif self.config["active"]["update_method"] == "mcdropout":
             self.uncertainty_mcdropout()
         elif self.config["active"]["update_method"] == "evidential":

@@ -118,7 +118,7 @@ if __name__ == "__main__":
             current_datetime = datetime.datetime.now()
             current_datetime_str = current_datetime.strftime("%m%d-%H:%M-")
             active_learning_method = config.get("active", "")
-            if active_learning_method is not "":
+            if active_learning_method != "":
                 active_learning_method = config["active"]["update_method"]
             wandb.init(
                 project="mlff",

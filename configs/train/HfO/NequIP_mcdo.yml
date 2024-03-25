@@ -105,7 +105,7 @@ active:
   init_size: 0.1
   update_method: mcdropout
   update_size: 0.08
-  mcdropout: 3
+  mcdropout: 8
   rounds: 5
 
 wandb: True

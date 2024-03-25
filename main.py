@@ -68,7 +68,7 @@ from src.common.utils import new_trainer_context, new_evaluator_context
 import wandb
 import datetime
 
-TAGS = ["debug"]
+TAGS = ["impl"]
 
 
 class Runner(submitit.helpers.Checkpointable):
@@ -117,11 +117,13 @@ if __name__ == "__main__":
         if config.get("wandb", False):
             current_datetime = datetime.datetime.now()
             current_datetime_str = current_datetime.strftime("%m%d-%H:%M-")
+            active_learning_method = config.get("active", "")
+            if active_learning_method is not "":
+                active_learning_method = config["active"]["update_method"]
             wandb.init(
                 project="mlff",
                 entity="eddy26",
-                group=current_datetime_str+config["model"]["name"],
-                # group="AL-mcdo",
+                group=current_datetime_str + config["model"]["name"] + "-" + active_learning_method,
                 config=config,
                 tags=TAGS
             )

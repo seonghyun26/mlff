@@ -30,35 +30,37 @@ task:
 trainer: forces_nequip
 
 model:
-  name: nequip
+  name: allegro
   # neural network
-  model_builders: 
-    - SimpleIrrepsConfig
-    - EnergyModel
+  model_builders:
+    - Allegro
     - PerSpeciesRescale
     - ForceOutput
     - RescaleEnergyEtc
-  num_layers: 4 
+  num_layers: 3
   l_max: 2
-  parity: True
-  num_features: 32
-  num_basis: 8
+  parity: o3_full
   BesselBasis_trainable: True
   PolynomialCutoff_p: 6
-  invariant_layers: 2
-  invariant_neurons: 64 
-  use_sc: True
-  nonlinearity_type: gate
-  resnet: False
-  nonlinearity_scalars:
-    e: silu
-    o: tanh
-  nonlinearity_gates:
-    e: silu
-    o: tanh
+  env_embed_multiplicity: 32
+  env_embed_mlp_latent_dimensions: []
+  #env_embed_mlp_nonlinearity: None # if None, comment out
+  env_embed_mlp_initialization: uniform
+  embed_initial_edge: True
+  two_body_latent_mlp_latent_dimensions: [64, 128, 256, 512]
+  two_body_latent_mlp_nonlinearity: silu
+  two_body_latent_mlp_initialization: uniform
+  latent_mlp_latent_dimensions: [512]
+  latent_mlp_nonlinearity: silu
+  latent_mlp_initialization: uniform
+  latent_resnet: True
+  edge_eng_mlp_latent_dimensions: [128]
+  #edge_eng_mlp_nonlinearity: None # if None, comment out
+  edge_eng_mlp_initialization: uniform
 
   # using data statistics
   # 'auto' requires to set 'initialize' as True, meaning that data statistics will be calculated if the statistics file does not exist
+  # if None, comment out
   avg_num_neighbors: auto  
   use_scale_shift: True
 
@@ -69,7 +71,7 @@ model:
   cutoff: 6.0 
   max_neighbors: 50 
   otf_graph: False 
-  use_pbc: True 
+  use_pbc: True
 
   # data-related arg
   chemical_symbols:
@@ -77,7 +79,7 @@ model:
     - Hf
 
 optim:
-  batch_size: 16 
+  batch_size: 16
   eval_batch_size: 16
   num_workers: 2
   max_epochs: 120
@@ -105,7 +107,7 @@ active:
   init_size: 0.1
   update_method: mcdropout
   update_size: 0.08
-  mcdropout: 8
+  mcdropout: 4
   mcdropout_value: energy
   rounds: 5
 

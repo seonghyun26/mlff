@@ -41,4 +41,4 @@ CUDA_VISIBLE_DEVICES=$GPU torchrun --nproc_per_node=$NUMGPUS main.py \
     --run-dir $RUNDIR \
     --identifier $RUNID \
     --print-every 100 \
-    --save-ckpt-every-epoch 20 \
+    --save-ckpt-every-epoch 20

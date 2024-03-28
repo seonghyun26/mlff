@@ -107,7 +107,8 @@ active:
   update_method: noise
   update_size: 0.08
   variance_target: energy
+  variance_sample_number: 4
   noise_scale: 0.01
-  noise_number: 4
+  noise_update_edge: False
 
 wandb: True

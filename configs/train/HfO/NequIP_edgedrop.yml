@@ -101,12 +101,13 @@ optim:
 
 active:
   use: True
+  rounds: 5
   init_method: random
   init_size: 0.1
-  update_method: mcdropout
+  update_method: edgedrop
   update_size: 0.08
   variance_target: energy
-  variance_sample_number: 8
-  rounds: 5
+  variance_sample_number: 4
+  edgedrop_scale: 0.01
 
 wandb: True

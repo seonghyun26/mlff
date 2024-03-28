@@ -424,6 +424,49 @@ class ForcesTrainer(BaseTrainer):
         
         return al_dataset_update_idx
     
+    def uncertainty_latticeshift(self):
+        x_shift = self.config["active"].get("x_shift", 0)
+        y_shift = self.config["active"].get("y_shift", 0)
+        z_shift = self.config["active"].get("z_shift", 0)
+        variance_target = self.config["active"].get("variance_target", "energy")
+        al_dataset_remaining_idx_arr = np.array(list(self.al_dataset_remaining_idx))
+        self.set_uncertainty_dataset(al_dataset_remaining_idx_arr)
+
+        ensure_fitted(self._unwrapped_model, warn=True)
+        rank = distutils.get_rank()
+        self.model.eval()
+        variance = []
+        
+        pbar = tqdm(
+            enumerate(self.train_loader),
+            total=len(self.train_loader),
+            position=rank,
+            desc=f"Device {rank}, selecting samples for active learning",
+        )
+        for i, batch in pbar:
+            with torch.cuda.amp.autocast(enabled=self.scaler is not None):
+                variance_batch = []
+                out = self._forward(batch)
+                variance_batch.append(out[variance_target])
+                # NOTE: Lattice shift
+                batch_lattice_shifted = lattice_shift(batch, x_shift, y_shift, z_shift)
+                out_shifted = self._forward(batch_lattice_shifted)
+                variance_batch.append(out_shifted[variance_target])
+                
+            prediction_variation = self.uncertainty_prediction_variation(variance_target, variance_batch)
+            variance.append(prediction_variation)
+            
+            if i == 20 and self.config["active"].get("debug", False):
+                break
+                    
+        variance = torch.cat(variance)
+        selected_idx = torch.argsort(variance, descending=True)[:self.al_dataset_update_size]
+        al_dataset_update_idx = al_dataset_remaining_idx_arr[selected_idx.detach().cpu().numpy()]
+        self.al_dataset_idx = torch.concat([self.al_dataset_idx, torch.from_numpy(al_dataset_update_idx)])
+        self.al_dataset_remaining_idx.difference_update(set(al_dataset_update_idx))
+        
+        return al_dataset_update_idx
+    
     def uncertainty_evidential(self):
         raise NotImplementedError(f"Active learning method {self.config['active']['update_method']} is not supported yet")
         
@@ -442,6 +485,8 @@ class ForcesTrainer(BaseTrainer):
             al_dataset_update_idx = self.uncertainty_noise()
         elif self.config["active"]["update_method"] == "edgedrop":
             al_dataset_update_idx = self.uncertainty_edgedrop()
+        elif self.config["active"]["update_method"] == "latticeshift":
+            al_dataset_update_idx = self.uncertinaty_latticeshift()
         elif self.config["active"]["update_method"] == "evidential":
             al_dataset_update_idx = self.uncertainty_evidential()
         elif self.config["active"]["update_method"] == "gaussian":

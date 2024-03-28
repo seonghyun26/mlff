@@ -166,7 +166,7 @@ class ForcesTrainer(BaseTrainer):
             training_state=False,
         )
     
-    def set_al_dataset(self):
+    def set_active_dataset(self):
         self.train_dataset_active = torch.utils.data.Subset(
             self.train_dataset,
             self.al_dataset_idx
@@ -216,7 +216,7 @@ class ForcesTrainer(BaseTrainer):
             raise ValueError("Error, dataset index not matching")
         return
      
-    def init_al_dataset(self):
+    def init_active_dataset(self):
         self.train_local_batch_size = self.config["optim"]["batch_size"]
         self.org_train_loader = self.train_loader
         self.org_dataset_size = len(self.org_train_loader.dataset)
@@ -232,11 +232,20 @@ class ForcesTrainer(BaseTrainer):
         else:
             raise NotImplementedError(f"Active learning initialization method {self.config['active']['init_method']} is not supported yet")
 
-        self.set_al_dataset()
+        self.set_active_dataset()
         
         self.analysis = {}
         self.analysis["peratom_force_error"] = []
         self.analysis["peratom_energy_error"] = []
+    
+    def uncertainty_random(self):
+        al_dataset_remaining_idx_arr = np.array(list(self.al_dataset_remaining_idx))
+        selected_idx = torch.randperm(len(al_dataset_remaining_idx_arr))[:self.al_dataset_update_size]
+        al_dataset_update_idx = al_dataset_remaining_idx_arr[selected_idx]
+        self.al_dataset_idx = torch.concat([self.al_dataset_idx, torch.from_numpy(al_dataset_update_idx)])
+        self.al_dataset_remaining_idx.difference_update(set(al_dataset_update_idx))
+        
+        return al_dataset_update_idx
     
     def uncertainty_mcdropout(self):
         if self.config["active"].get("mcdropout", 0) == 0:
@@ -264,7 +273,7 @@ class ForcesTrainer(BaseTrainer):
 
         ensure_fitted(self._unwrapped_model, warn=True)
         rank = distutils.get_rank()
-        mcdropout_value = self.config["active"]["mcdropout_value"]
+        variance_target = self.config["active"]["variance_target"]
         predictions_energy = []
         self.model.eval()
         
@@ -279,43 +288,26 @@ class ForcesTrainer(BaseTrainer):
                 prediction_energy_batch = []
                 for _ in range(mc_dropout_num):
                     out = self._forward(batch)
-                    # prediction_energy_batch.append(out[mcdropout_value].detach().cpu())
-                    prediction_energy_batch.append(out[mcdropout_value])
+                    prediction_energy_batch.append(out[variance_target])
                     
             if len(prediction_energy_batch) > 0:
-                if mcdropout_value == "forces":
+                if variance_target == "forces":
                     variation = variation.reshape(96, -1)    
-                elif mcdropout_value == "energy":
+                elif variance_target == "energy":
                     variation = torch.var(torch.stack(prediction_energy_batch, dim=0), axis=0)
                 else:
-                    raise NotImplementedError(f"Active learning method {mcdropout_value} is not supported yet")
+                    raise NotImplementedError(f"Active learning method {variance_target} is not supported yet")
                 predictions_energy.append(variation)
                     
         predictions_energy = torch.cat(predictions_energy)
         selected_idx = torch.argsort(predictions_energy, descending=True)[:self.al_dataset_update_size]
         al_dataset_update_idx = al_dataset_remaining_idx_arr[selected_idx.detach().cpu().numpy()]
-        
-        
-        # NOTE: DEUBG
-        if len(predictions_energy) != len(self.uncertainty_dataset):
-            raise ValueError(f"Number of variance and dataset size are not matching")
-        # print(len(predictions_energy))
-        # print(len(self.al_dataset_idx))
-        # print(len(al_dataset_update_idx))
-        # print(self.org_dataset_size)
-        
         self.al_dataset_idx = torch.concat([self.al_dataset_idx, torch.from_numpy(al_dataset_update_idx)])
         self.al_dataset_remaining_idx.difference_update(set(al_dataset_update_idx))
         
-        if len(self.al_dataset_idx) + len(self.al_dataset_remaining_idx) != self.org_dataset_size:
-            print("Error, dataset index not matching")
-            print(len(self.al_dataset_idx))
-            print(len(self.al_dataset_remaining_idx))
-            print(self.org_dataset_size)
+        return al_dataset_update_idx
     
     def uncertainty_noise(self):
-        if len(self.al_dataset_remaining_idx) == 0:
-            raise ValueError(f"Remaining dataset is empty")
         
         noise_scale = self.config["active"].get("noise_scale", 0.1)
         noise_number = self.config["active"].get("noise_number", 3)
@@ -361,7 +353,9 @@ class ForcesTrainer(BaseTrainer):
                     
             if len(prediction_energy_batch) > 0:
                 if variance_target == "forces":
-                    variation = variation.reshape(96, -1)    
+                    
+                    variation = variation.reshape(96, -1)  
+                    raise NotImplementedError(f"Variance on {variance_target} is not supported yet")
                 elif variance_target == "energy":
                     variation = torch.var(torch.stack(prediction_energy_batch, dim=0), axis=0)
                 else:
@@ -372,19 +366,12 @@ class ForcesTrainer(BaseTrainer):
                 break
                     
         predictions_energy = torch.cat(predictions_energy)
-        if len(predictions_energy) != len(self.uncertainty_dataset):
-            raise ValueError(f"Number of variance and dataset size are not matching")
-        
         selected_idx = torch.argsort(predictions_energy, descending=True)[:self.al_dataset_update_size]
         al_dataset_update_idx = al_dataset_remaining_idx_arr[selected_idx.detach().cpu().numpy()]
         self.al_dataset_idx = torch.concat([self.al_dataset_idx, torch.from_numpy(al_dataset_update_idx)])
         self.al_dataset_remaining_idx.difference_update(set(al_dataset_update_idx))
         
-        if len(self.al_dataset_idx) + len(self.al_dataset_remaining_idx) != self.org_dataset_size:
-            print("Error, dataset index not matching")
-            print(len(self.al_dataset_idx))
-            print(len(self.al_dataset_remaining_idx))
-            print(self.org_dataset_size)
+        return al_dataset_update_idx
     
     def uncertainty_evidential(self):
         raise NotImplementedError(f"Active learning method {self.config['active']['update_method']} is not supported yet")
@@ -392,27 +379,32 @@ class ForcesTrainer(BaseTrainer):
     def uncertainty_gp(self):
         raise NotImplementedError(f"Active learning method {self.config['active']['update_method']} is not supported yet")
         
-    def update_al_dataset(self, round_current):
+    def update_active_dataset(self, round_current):
+        if len(self.al_dataset_remaining_idx) == 0:
+            raise ValueError(f"Remaining dataset is empty")
+        
         if self.config["active"]["update_method"] == "random":
-            if self.config["active"]["init_method"] == "random":
-                dataset_update_idx = self.config["optim"]["num_train"] + self.al_dataset_update_size
-                self.al_dataset_idx = self.al_dataset_rand_idx[:dataset_update_idx]
-            else:
-                al_dataset_remaining_idx = self.al_dataset_remaining_idx
-                # NOTE: Randomly select samples from the remaining dataset
-                raise NotImplementedError(f"Active learning initialization method {self.config['active']['init_method']} is not supported yet")
+            al_dataset_update_idx = self.uncertainty_random()
         elif self.config["active"]["update_method"] == "mcdropout":
-            self.uncertainty_mcdropout()
+            al_dataset_update_idx = self.uncertainty_mcdropout()
         elif self.config["active"]["update_method"] == "noise":
-            self.uncertainty_noise()
+            al_dataset_update_idx = self.uncertainty_noise()
         elif self.config["active"]["update_method"] == "evidential":
-            self.uncertainty_evidential()
+            al_dataset_update_idx = self.uncertainty_evidential()
         elif self.config["active"]["update_method"] == "gaussian":
-            self.uncertainty_gp()
+            al_dataset_update_idx = self.uncertainty_gp()
         else:
             raise NotImplementedError(f"Active learning method {self.config['active']['update_method']} is not supported yet")
         
-        self.set_al_dataset()
+        if len(self.al_dataset_idx) + len(self.al_dataset_remaining_idx) != self.org_dataset_size:
+            print(len(predictions_energy))
+            print(len(self.al_dataset_idx))
+            print(len(al_dataset_update_idx))
+            print(len(self.al_dataset_remaining_idx))
+            print(self.org_dataset_size)
+            raise ValueError("Error, dataset index not matching")
+        
+        self.set_active_dataset()
     
     def train(self):
         if self.config["active"].get("use", False):
@@ -579,7 +571,7 @@ class ForcesTrainer(BaseTrainer):
         self.metrics = {}
         
         # Active learning configurations
-        self.init_al_dataset()
+        self.init_active_dataset()
         global_step = 0
         initial_weights = deepcopy(self.model.state_dict())
         start_train_time = time.time()
@@ -591,7 +583,7 @@ class ForcesTrainer(BaseTrainer):
             if round_current != 0:
                 bm_logging.info(f"Model initiliazed to the initial weights")
                 self.model.load_state_dict(initial_weights)
-            bm_logging.info(f"\n>> Active learning - round {round_current} \n - Current dataset size: {len(self.train_loader.dataset)}\n - Remaining dataset size: {len(self.al_dataset_remaining_idx)}\n - step: {self.step}")
+            bm_logging.info(f"\n>> Active learning - round {round_current} \n - Current dataset size: {len(self.train_loader.dataset)}\n - Remaining dataset size: {len(self.al_dataset_remaining_idx)}\n - Steps taken: {self.step}")
             
             # Training loop
             start_round_time = time.time()
@@ -717,15 +709,15 @@ class ForcesTrainer(BaseTrainer):
             
             # Evaluation done on each round
             self.round_current = round_current
-            if self.config["active"].get("debug", True) == False:
+            if not self.config["active"].get("debug", False):
                 metric_table = self.create_metric_table(display_meV=True)
                 bm_logging.info(f'Evaluation for round {round_current}')
                 bm_logging.info(f"\n{metric_table}")
             
-            # Active learning: update dataset for the next round
+            # Update dataset
             global_step = self.step
             dataset_update_time = time.time()
-            self.update_al_dataset(round_current)
+            self.update_active_dataset(round_current)
             dataset_update_time = time.time()-dataset_update_time
             bm_logging.info(f"Dataset update time: {dataset_update_time:.1f} sec")
             if self.config["wandb"]:

@@ -266,7 +266,7 @@ class ForcesTrainer(BaseTrainer):
         return al_dataset_update_idx
     
     def uncertainty_prediction_variation(self, variance_target, predictions_batch):
-        if len(predictions_batch) > 0:
+        if len(predictions_batch) <= 0:
             raise ValueError(f"Prediction batch is empty")
         
         if variance_target == "forces":
@@ -425,6 +425,13 @@ class ForcesTrainer(BaseTrainer):
         return al_dataset_update_idx
     
     def uncertainty_latticeshift(self):
+        def lattice_shift(batch, x_shift, y_shift, z_shift):
+            pos = batch[0].pos
+            selected_idx = pos[:, 1] * 2 - pos[:, 2] <= 0
+            y_max = torch.max(pos[1])
+            batch[0].pos[selected_idx, 1] += y_max
+            return batch
+        
         x_shift = self.config["active"].get("x_shift", 0)
         y_shift = self.config["active"].get("y_shift", 0)
         z_shift = self.config["active"].get("z_shift", 0)
@@ -822,6 +829,7 @@ class ForcesTrainer(BaseTrainer):
                     {
                         "round": round_current,
                         "active.dataset_update_time": dataset_update_time,
+                        "active.dataset_index": wandb.Histogram(self.al_dataset_idx)
                     },
                     step=self.step,
                 )

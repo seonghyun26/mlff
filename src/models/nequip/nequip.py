@@ -165,6 +165,7 @@ class NequIPWrap(BaseModel):
         use_scale_shift=True,
         # initialize: False = load checkpoint, True = data seeing is the first
         initialize=True,
+        dropout=0,
     ):
         self.num_targets = num_targets
         self.use_pbc = use_pbc
@@ -207,6 +208,7 @@ class NequIPWrap(BaseModel):
             global_rescale_shift=global_rescale_shift,
             global_rescale_scale=global_rescale_scale,
             dataset_statistics_stride=1,
+            dropout=dropout,
         )
         model_config = Config.from_dict(model_config)
 

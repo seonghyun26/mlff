@@ -132,6 +132,11 @@ datasets/HfO_raw/
 docker.txt
 samples/
 *.tar
-codebases/
+codebases/allegro
+codebases/auto-FOX
+codebases/mace
+codebases/ocp
+codebases/pathces
+
 .bash_history
 *.xyz

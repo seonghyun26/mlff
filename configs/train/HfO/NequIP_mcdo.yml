@@ -56,6 +56,7 @@ model:
   nonlinearity_gates:
     e: silu
     o: tanh
+  dropout: 0.2
 
   # using data statistics
   # 'auto' requires to set 'initialize' as True, meaning that data statistics will be calculated if the statistics file does not exist
@@ -100,13 +101,14 @@ optim:
   #loss_force: l2mae
 
 active:
+  debug: False
   use: True
+  rounds: 5
   init_method: random
   init_size: 0.1
   update_method: mcdropout
   update_size: 0.08
   variance_target: energy
-  variance_sample_number: 8
-  rounds: 5
+  mcdropout_number: 4
 
 wandb: True

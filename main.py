@@ -120,6 +120,8 @@ if __name__ == "__main__":
             active_learning_method = config.get("active", "")
             if active_learning_method != "":
                 active_learning_method = config["active"]["update_method"]
+                if config["active"]["debug"]:
+                    active_learning_method += "-debug"
             wandb.init(
                 project="mlff",
                 entity="eddy26",

@@ -14,7 +14,6 @@ from nequip.nn import (
     AtomwiseLinear,
     AtomwiseReduce,
     ConvNetLayer,
-    Dropout
 )
 from nequip.nn.embedding import (
     OneHotAtomEncoding,
@@ -53,14 +52,8 @@ def EnergyModel(config):
             "conv_to_output_hidden": AtomwiseLinear,
             "output_hidden_to_scalar": (
                 AtomwiseLinear,
-                dict(irreps_out="1x0e", out_field=AtomicDataDict.PER_ATOM_ENERGY_KEY),
+                dict(irreps_out="1x0e", out_field=AtomicDataDict.PER_ATOM_ENERGY_KEY, dropout=config.get("dropout")),
             ),
-            # "dropout": (
-            #     Dropout,
-            #     dict(
-            #         p=0.4
-            #     )
-            # ),
             "total_energy_sum": (
                 AtomwiseReduce,
                 dict(

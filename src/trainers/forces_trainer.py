@@ -287,11 +287,15 @@ class ForcesTrainer(BaseTrainer):
         variance_sample_number = self.config["active"].get("variance_sample_number", 4)
 
         al_dataset_remaining_idx_arr = np.array(list(self.al_dataset_remaining_idx))
-        set_uncertainty_dataset(al_dataset_remaining_idx_arr)
+        self.set_uncertainty_dataset(al_dataset_remaining_idx_arr)
 
         ensure_fitted(self._unwrapped_model, warn=True)
         rank = distutils.get_rank()
         self.model.eval()
+        layers = [layer for layer in self.model.module.nequip_model.model.func]
+        for layer in layers:
+            if hasattr(layer, "dropout"):
+                layer.dropout.train()
         variance = []
         
         pbar = tqdm(
@@ -307,10 +311,10 @@ class ForcesTrainer(BaseTrainer):
                     out = self._forward(batch)
                     variance_batch.append(out[variance_target])
 
-            prediction_variation = uncertainty_prediction_variation(variance_target, variance_batch)
+            prediction_variation = self.uncertainty_prediction_variation(variance_target, variance_batch)
             variance.append(prediction_variation)
             
-            if i == 20 and self.config["active"].get("debug", False):
+            if i == self.config["active"]["debug_round_cutoff"] and self.config["active"].get("debug", False):
                 break
                     
         variance = torch.cat(variance)
@@ -364,7 +368,7 @@ class ForcesTrainer(BaseTrainer):
             prediction_variation = self.uncertainty_prediction_variation(variance_target, variance_batch)
             variance.append(prediction_variation)
             
-            if i == 20 and self.config["active"].get("debug", False):
+            if i == self.config["active"]["debug_round_cutoff"] and self.config["active"].get("debug", False):
                 break
                     
         variance = torch.cat(variance)
@@ -825,11 +829,13 @@ class ForcesTrainer(BaseTrainer):
             dataset_update_time = time.time()-dataset_update_time
             bm_logging.info(f"Dataset update time: {dataset_update_time:.1f} sec")
             if self.config["wandb"]:
+                index_image = torch.zeros(1, self.org_dataset_size, 1, device=self.al_dataset_idx.device)
+                index_image.index_fill_(1, self.al_dataset_idx, 1)
                 wandb.log(
                     {
                         "round": round_current,
                         "active.dataset_update_time": dataset_update_time,
-                        "active.dataset_index": wandb.Histogram(self.al_dataset_idx)
+                        "active.dataset_index": wandb.Histogram(index_image.detach().cpu().numpy())
                     },
                     step=self.step,
                 )

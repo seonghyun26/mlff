@@ -292,10 +292,14 @@ class ForcesTrainer(BaseTrainer):
         ensure_fitted(self._unwrapped_model, warn=True)
         rank = distutils.get_rank()
         self.model.eval()
-        layers = [layer for layer in self.model.module.nequip_model.model.func]
-        for layer in layers:
-            if hasattr(layer, "dropout"):
-                layer.dropout.train()
+        layers_with_dropout = [
+            layer for layer in self.model.module.nequip_model.model.func
+            if hasattr(self.model.module, "nequip_model")
+            and hasattr(layer, "dropout") 
+        ]
+        bm_logging.info("[active] " + "Layers with dropout: " + len(layers_with_dropout))
+        for layer in layers_with_dropout:
+            layer.dropout.train()
         variance = []
         
         pbar = tqdm(
@@ -314,7 +318,7 @@ class ForcesTrainer(BaseTrainer):
             prediction_variation = self.uncertainty_prediction_variation(variance_target, variance_batch)
             variance.append(prediction_variation)
             
-            if i == self.config["active"]["debug_round_cutoff"] and self.config["active"].get("debug", False):
+            if i == self.config["active"].get("debug_round_cutoff", -1) and self.config["active"].get("debug", False):
                 break
                     
         variance = torch.cat(variance)
@@ -368,7 +372,7 @@ class ForcesTrainer(BaseTrainer):
             prediction_variation = self.uncertainty_prediction_variation(variance_target, variance_batch)
             variance.append(prediction_variation)
             
-            if i == self.config["active"]["debug_round_cutoff"] and self.config["active"].get("debug", False):
+            if i == self.config["active"].get("debug_round_cutoff", -1) and self.config["active"].get("debug", False):
                 break
                     
         variance = torch.cat(variance)

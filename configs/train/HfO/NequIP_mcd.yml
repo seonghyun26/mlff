@@ -109,6 +109,6 @@ active:
   update_method: mcdropout
   update_size: 0.08
   variance_target: energy
-  mcdropout_number: 4
+  variance_sample_number: 4
 
 wandb: True

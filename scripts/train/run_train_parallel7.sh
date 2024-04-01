@@ -28,8 +28,10 @@ CONFIG=configs/train/${DATA}/${MODEL}.yml
 RUNDIR=train_results/${DATA}/${MODEL}
 RUNID=train
 
-GPU="0,1,2,3,4,5,6,7"
-NUMGPUS=8
+# GPU="0,1,2,3,4,5,6,7"
+# NUMGPUS=8
+GPU="1,2,3,4,5,6,7"
+NUMGPUS=7
 # CUDA_VISIBLE_DEVICES=$GPU python -m torch.distributed.launch --nproc_per_node=$NUMGPUS main.py \
 CUDA_VISIBLE_DEVICES=$GPU torchrun --nproc_per_node=$NUMGPUS main.py \
     --distributed \

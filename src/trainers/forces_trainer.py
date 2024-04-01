@@ -292,14 +292,14 @@ class ForcesTrainer(BaseTrainer):
         ensure_fitted(self._unwrapped_model, warn=True)
         rank = distutils.get_rank()
         self.model.eval()
-        layers_with_dropout = [
-            layer for layer in self.model.module.nequip_model.model.func
-            if hasattr(self.model.module, "nequip_model")
-            and hasattr(layer, "dropout") 
-        ]
-        bm_logging.info("[active] " + "Layers with dropout: " + len(layers_with_dropout))
-        for layer in layers_with_dropout:
-            layer.dropout.train()
+        if hasattr(self.model.module, "nequip_model"):
+            layers_with_dropout = [
+                layer for layer in self.model.module.nequip_model.model.func
+                if hasattr(layer, "dropout") 
+            ]
+            bm_logging.info("[Active] " + "Layers with dropout: " + len(layers_with_dropout))
+            for layer in layers_with_dropout:
+                layer.dropout.train()
         variance = []
         
         pbar = tqdm(
@@ -693,9 +693,9 @@ class ForcesTrainer(BaseTrainer):
             eval_every = self.config["optim"].get("eval_every", len(self.train_loader))
             checkpoint_every = self.config["optim"].get("checkpoint_every", eval_every)
             if round_current != 0:
-                bm_logging.info(f"Model initiliazed to the initial weights")
+                bm_logging.info(f"[Active] Model initiliazed")
                 self.model.load_state_dict(initial_weights)
-            bm_logging.info(f"\n>> Active learning - round {round_current} \n - Current dataset size: {len(self.train_loader.dataset)}\n - Remaining dataset size: {len(self.al_dataset_remaining_idx)}\n - Steps taken: {self.step}")
+            bm_logging.info(f"\n [Active] Round {round_current} \n - Current dataset size: {len(self.train_loader.dataset)}\n - Remaining dataset size: {len(self.al_dataset_remaining_idx)}\n - Steps taken: {self.step}")
             
             # Training loop
             start_round_time = time.time()
@@ -812,7 +812,7 @@ class ForcesTrainer(BaseTrainer):
                 bm_logging.info(f"{epoch_int+1} epoch elapsed time: {time.time()-start_epoch_time:.1f} sec")
 
             round_elapsed_time = time.time() - start_round_time
-            bm_logging.info(f"Round {round_current} elapsed time: {round_elapsed_time:.1f} sec")
+            bm_logging.info(f"[Active] Round {round_current} elapsed time: {round_elapsed_time:.1f} sec")
             self.save(
                 metrics=val_metrics,
                 checkpoint_file=f"ckpt_round{round_current}.pt",
@@ -823,7 +823,7 @@ class ForcesTrainer(BaseTrainer):
             self.round_current = round_current
             if not self.config["active"].get("debug", False):
                 metric_table = self.create_metric_table(display_meV=True)
-                bm_logging.info(f'Evaluation for round {round_current}')
+                bm_logging.info(f'[Active] Evaluation on round {round_current}')
                 bm_logging.info(f"\n{metric_table}")
             
             # Update dataset
@@ -831,7 +831,7 @@ class ForcesTrainer(BaseTrainer):
             dataset_update_time = time.time()
             self.update_active_dataset(round_current)
             dataset_update_time = time.time()-dataset_update_time
-            bm_logging.info(f"Dataset update time: {dataset_update_time:.1f} sec")
+            bm_logging.info(f"[Active] Dataset update time: {dataset_update_time:.1f} sec")
             if self.config["wandb"]:
                 index_image = torch.zeros(1, self.org_dataset_size, 1, device=self.al_dataset_idx.device)
                 index_image.index_fill_(1, self.al_dataset_idx, 1)
@@ -845,7 +845,7 @@ class ForcesTrainer(BaseTrainer):
                 )
         
         train_elapsed_time = time.time()-start_train_time
-        bm_logging.info(f"training elapsed time: {train_elapsed_time:.1f} sec")
+        bm_logging.info(f"Total training elapsed time: {train_elapsed_time:.1f} sec, rounds {round_current}")
 
         # Final evaluation
         bm_logging.info("Performing the final evaluation (last model)")

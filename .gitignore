@@ -140,3 +140,5 @@ codebases/pathces
 
 .bash_history
 *.xyz
+
+cluster/log/*

@@ -195,7 +195,7 @@ class ForcesTrainer(BaseTrainer):
         self.train_sampler_uncertainty = self.get_sampler(
             dataset=self.uncertainty_dataset,
             batch_size=self.train_local_batch_size * 2,
-            shuffle=True, 
+            shuffle=False, 
         )
         self.train_loader = self.get_dataloader(
             dataset=self.uncertainty_dataset,
@@ -313,7 +313,7 @@ class ForcesTrainer(BaseTrainer):
                 variance_batch = []
                 for _ in range(variance_sample_number):
                     out = self._forward(batch)
-                    variance_batch.append(out[variance_target])
+                    
 
             prediction_variation = self.uncertainty_prediction_variation(variance_target, variance_batch)
             variance.append(prediction_variation)
@@ -487,6 +487,71 @@ class ForcesTrainer(BaseTrainer):
         
     def uncertainty_gp(self):
         raise NotImplementedError(f"Active learning method {self.config['active']['update_method']} is not supported yet")
+
+    def uncertainty_cheet(self):
+        def add_noise(batch, noise_scale, update_edge=False):
+            gaussian_noise = torch.normal(0, noise_scale, size=batch[0].pos.shape, device=batch[0].total_energy.device)
+            edge_index = batch[0].edge_index
+            distance = torch.cdist(batch[0].pos[edge_index[0]].unsqueeze(1), batch[0].pos[edge_index[1]].unsqueeze(1), p=2).squeeze()
+            max_distance = torch.max(distance)
+            batch[0].pos = batch[0].pos + gaussian_noise
+            if update_edge:
+                atom_wise_distance = torch.cdist(batch[0].pos.unsqueeze(0), batch[0].pos.unsqueeze(0), p=2).squeeze()
+                raise NotImplementedError(f"Updaing edges when graph given is not supported yet")
+            
+            return batch
+        
+        noise_scale = self.config["active"].get("noise_scale", 0.1)
+        variance_target = self.config["active"].get("variance_target", "energy")
+        noise_update_edge = self.config["active"].get("noise_update_edge", False)
+        variance_sample_number = self.config["active"].get("variance_sample_number", 4)
+        al_dataset_remaining_idx_arr = np.array(list(self.al_dataset_remaining_idx))
+        self.set_uncertainty_dataset(al_dataset_remaining_idx_arr)
+
+        ensure_fitted(self._unwrapped_model, warn=True)
+        rank = distutils.get_rank()
+        self.model.eval()
+        variance = []
+        loss = []
+        
+        pbar = tqdm(
+            enumerate(self.train_loader),
+            total=len(self.train_loader),
+            position=rank,
+            desc=f"Device {rank}, selecting samples for active learning",
+        )
+        for i, batch in pbar:
+            with torch.cuda.amp.autocast(enabled=self.scaler is not None):
+                out = self._forward(batch)
+                batch_loss = self._compute_loss(out, batch)
+                loss.append(batch_loss)
+                variance_batch =[]
+                for _ in range(variance_sample_number):
+                    batch = add_noise(batch, noise_scale, noise_update_edge)
+                    out = self._forward(batch)
+                    variance_batch.append(out[variance_target])
+            
+            prediction_variation = self.uncertainty_prediction_variation(variance_target, variance_batch)
+            variance.append(prediction_variation)
+            
+            if config["wandb"]:
+                wandb.log({
+                    "round": round_current,
+                    "active/loss": batch_loss,
+                    "active/variance": prediction_variation,
+                })
+            
+            if i == self.config["active"].get("debug_round_cutoff", -1) and self.config["active"].get("debug", False):
+                break
+        
+        
+        loss = torch.cat(loss)
+        selected_idx = torch.argsort(loss, descending=True)[:self.al_dataset_update_size]
+        al_dataset_update_idx = al_dataset_remaining_idx_arr[selected_idx.detach().cpu().numpy()]
+        self.al_dataset_idx = torch.concat([self.al_dataset_idx, torch.from_numpy(al_dataset_update_idx)])
+        self.al_dataset_remaining_idx.difference_update(set(al_dataset_update_idx))
+        
+        return al_dataset_update_idx
         
     def update_active_dataset(self, round_current):
         if len(self.al_dataset_remaining_idx) == 0:
@@ -506,6 +571,8 @@ class ForcesTrainer(BaseTrainer):
             al_dataset_update_idx = self.uncertainty_evidential()
         elif self.config["active"]["update_method"] == "gaussian":
             al_dataset_update_idx = self.uncertainty_gp()
+        elif self.config["active"]["update_method"] == "cheet":
+            al_dataset_update_idx = self.uncertainty_cheet()
         else:
             raise NotImplementedError(f"Active learning method {self.config['active']['update_method']} is not supported yet")
         

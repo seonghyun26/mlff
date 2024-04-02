@@ -1,0 +1,116 @@
+dataset:
+  normalize:
+    normalize_labels: True
+    per_atom: True
+    normalize_labels_json: datasets/HfO/atom_graph_rmax6.0_maxneighbor50/normalize_stats.json
+
+  train:
+    - src: datasets/HfO/atom_graph_rmax6.0_maxneighbor50/train.lmdb
+
+  valid:
+    - src: datasets/HfO/atom_graph_rmax6.0_maxneighbor50/valid.lmdb
+  
+  test:
+    - src: datasets/HfO/atom_graph_rmax6.0_maxneighbor50/test.lmdb
+
+logger: files
+
+task:
+  dataset: lmdb_sait
+  description: "Regressing to energies and forces for DFT trajectories of HfO"
+  metrics: 
+    - energy_per_atom_mae
+    - energy_per_atom_mse
+    - forces_mae
+    - forces_mse
+  primary_metric: forces_mse
+  train_on_free_atoms: False
+  eval_on_free_atoms: False
+
+trainer: forces_nequip
+
+model:
+  name: nequip
+  # neural network
+  model_builders: 
+    - SimpleIrrepsConfig
+    - EnergyModel
+    - PerSpeciesRescale
+    - ForceOutput
+    - RescaleEnergyEtc
+  num_layers: 4 
+  l_max: 2
+  parity: True
+  num_features: 32
+  num_basis: 8
+  BesselBasis_trainable: True
+  PolynomialCutoff_p: 6
+  invariant_layers: 2
+  invariant_neurons: 64 
+  use_sc: True
+  nonlinearity_type: gate
+  resnet: False
+  nonlinearity_scalars:
+    e: silu
+    o: tanh
+  nonlinearity_gates:
+    e: silu
+    o: tanh
+  dropout: 0.1
+
+  # using data statistics
+  # 'auto' requires to set 'initialize' as True, meaning that data statistics will be calculated if the statistics file does not exist
+  avg_num_neighbors: auto  
+  use_scale_shift: True
+
+  # force
+  regress_forces: True
+
+  # graph
+  cutoff: 6.0 
+  max_neighbors: 50 
+  otf_graph: False 
+  use_pbc: True 
+
+  # data-related arg
+  chemical_symbols:
+    - O
+    - Hf
+
+optim:
+  batch_size: 16 
+  eval_batch_size: 16
+  num_workers: 2
+  max_epochs: 1
+
+  optimizer: Adam
+  optimizer_params: {"amsgrad": False}
+  scheduler: LinearLR
+  lr_initial: 0.005
+  ema_decay: 0.99
+
+  energy_coefficient: 1
+  force_coefficient: 1
+
+  # MSE-based loss
+  loss_energy: energy_per_atom_mse
+  loss_force: force_per_dim_mse
+
+  # MAE-based loss
+  #loss_energy: energy_per_atom_mae
+  #loss_force: l2mae
+
+active:
+  debug: True
+  debug_round_cutoff: 10
+  use: True
+  rounds: 10
+  init_method: random
+  init_size: 0.1
+  update_method: cheet
+  update_size: 0.08
+  variance_target: energy
+  variance_sample_number: 16
+  noise_scale: 0.1
+
+wandb: True

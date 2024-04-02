@@ -73,13 +73,16 @@ class EnergyPerAtomMSELoss(nn.Module):
         assert reduction in ["mean", "sum"]
 
     def forward(self, 
-                input: torch.Tensor, 
-                target: torch.Tensor, 
-                natoms: torch.Tensor,
+        input: torch.Tensor, 
+        target: torch.Tensor, 
+        natoms: torch.Tensor,
+        # as_list: bool = False,
     ):
         assert input.shape[0] == natoms.shape[0] # (batch size,)
         
         squared_error = torch.square((target - input) / natoms)
+        # if as_list:
+        #     return squared_error
         if self.reduction == "mean":
             return torch.mean(squared_error)
         elif self.reduction == "sum":

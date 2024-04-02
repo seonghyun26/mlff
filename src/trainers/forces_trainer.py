@@ -511,7 +511,6 @@ class ForcesTrainer(BaseTrainer):
         ensure_fitted(self._unwrapped_model, warn=True)
         rank = distutils.get_rank()
         self.model.eval()
-        variance = []
         loss = []
         
         pbar = tqdm(
@@ -523,23 +522,42 @@ class ForcesTrainer(BaseTrainer):
         for i, batch in pbar:
             with torch.cuda.amp.autocast(enabled=self.scaler is not None):
                 out = self._forward(batch)
-                batch_loss = self._compute_loss(out, batch)
-                loss.append(batch_loss)
-                variance_batch =[]
+                # Variance by noise
+                variance_batch_energy =[]
+                variance_batch_forces =[]
                 for _ in range(variance_sample_number):
                     batch = add_noise(batch, noise_scale, noise_update_edge)
                     out = self._forward(batch)
-                    variance_batch.append(out[variance_target])
+                    variance_batch_energy.append(out["energy"])
+                    variance_batch_forces.append(out["forces"])
+
+            # Energy loss
+            energy_target = torch.cat(
+                [batch_.total_energy.to(self.device) for batch_ in batch], dim=0
+            )
+            natoms = 96
+            loss_energy = torch.square((energy_target - out["energy"]) / natoms)
+            loss.append(loss_energy)
             
-            prediction_variation = self.uncertainty_prediction_variation(variance_target, variance_batch)
-            variance.append(prediction_variation)
+            # Forces loss
+            mse_loss = torch.nn.MSELoss(reduction="none")
+            force_target = torch.cat(
+                [batch_.forces.to(self.device) for batch_ in batch], dim=0
+            )
+            loss_forces = mse_loss(out["forces"].reshape(-1), force_target.reshape(-1))
             
-            if config["wandb"]:
-                wandb.log({
-                    "round": round_current,
-                    "active/loss": batch_loss,
-                    "active/variance": prediction_variation,
-                })
+            batch_prediction_variation_energy = self.uncertainty_prediction_variation("energy", variance_batch_energy)
+            batch_prediction_variation_forces = self.uncertainty_prediction_variation("forces", variance_batch_forces)
+            
+            if self.config["wandb"]:
+                for j in range(len(loss_energy)):
+                    wandb.log({
+                        "round": self.round_current,
+                        "active/loss_energy": loss_energy[j],
+                        "active/loss_forces": loss_forces[j],
+                        "active/variance_energy": batch_prediction_variation_energy[j],
+                        "active/variance_forces": batch_prediction_variation_forces[j],
+                    })
             
             if i == self.config["active"].get("debug_round_cutoff", -1) and self.config["active"].get("debug", False):
                 break
@@ -587,7 +605,14 @@ class ForcesTrainer(BaseTrainer):
     
     def train(self):
         if self.config["active"].get("use", False):
-            self.active_train()
+            self.init_active_dataset()
+            active_type = self.config["active"].get("type", "")
+            if active_type == "single_model":
+                self.active_train()
+            elif active_type == "ensemble_model":
+                self.active_train_ensemble()
+            else:
+                raise NotImplementedError(f"Active learning method {self.config['active']['method']} is not supported yet")
         else:
             # Configurations
             ensure_fitted(self._unwrapped_model, warn=True)
@@ -750,7 +775,6 @@ class ForcesTrainer(BaseTrainer):
         self.metrics = {}
         
         # Active learning configurations
-        self.init_active_dataset()
         global_step = 0
         initial_weights = deepcopy(self.model.state_dict())
         start_train_time = time.time()
@@ -762,7 +786,200 @@ class ForcesTrainer(BaseTrainer):
             if round_current != 0:
                 bm_logging.info(f"[Active] Model initiliazed")
                 self.model.load_state_dict(initial_weights)
-            bm_logging.info(f"\n [Active] Round {round_current} \n - Current dataset size: {len(self.train_loader.dataset)}\n - Remaining dataset size: {len(self.al_dataset_remaining_idx)}\n - Steps taken: {self.step}")
+            bm_logging.info(f"[Active] Round {round_current} \n - Current dataset size: {len(self.train_loader.dataset)}\n - Remaining dataset size: {len(self.al_dataset_remaining_idx)}\n - Steps taken: {self.step}")
+            
+            # Training loop
+            start_round_time = time.time()
+            for epoch_int in range(0, self.config["optim"]["max_epochs"]):
+                global_epoch = round_current * self.config["optim"]["max_epochs"] + epoch_int
+                start_epoch_time = time.time()
+                self.train_sampler.set_epoch(epoch_int) # shuffle
+                train_loader_iter = iter(self.train_loader)      
+
+                for i in range(0, len(self.train_loader)):
+                    self.global_epoch = global_epoch
+                    self.epoch = epoch_int + (i + 1) / len(self.train_loader)
+                    self.step = global_step + epoch_int * len(self.train_loader) + i + 1
+                    self.model.train()
+                    
+                    # Get a batch.
+                    batch = next(train_loader_iter)
+
+                    # Forward, loss, backward.
+                    with torch.cuda.amp.autocast(enabled=self.scaler is not None):
+                        out = self._forward(batch)
+                        loss = self._compute_loss(out, batch)
+                    loss = self.scaler.scale(loss) if self.scaler else loss
+                    self._backward(loss)
+                    scale = self.scaler.get_scale() if self.scaler else 1.0
+
+                    # Compute metrics.
+                    self.metrics = self._compute_metrics(
+                        out,
+                        batch,
+                        self.evaluator,
+                        self.metrics,
+                    )
+
+                    # update local metrics (which will be aggregated across all ranks at print_every steps)
+                    self.metrics = self.evaluator.update(
+                        "loss", loss.item() / scale, self.metrics
+                    )
+
+                    if (
+                        self.step % self.config["cmd"]["print_every"] == 0 or
+                        self.step % len(self.train_loader) == 0
+                    ):
+                        # 1) aggregate training results so far
+                        # 2) print logging
+                        # 3) reset metrics
+                        aggregated_metrics = self.evaluator.aggregate(self.metrics)
+
+                        log_dict = {k: aggregated_metrics[k]["metric"] for k in aggregated_metrics}
+                        log_dict.update(
+                            {
+                                "lr": self.scheduler.get_lr(),
+                                "epoch": self.epoch,
+                                "step": self.step,
+                            }
+                        )
+                        # stdout logging
+                        bm_logging.info("[train] " + parse_logs(log_dict))
+                        # logger logging
+                        if self.logger:
+                            self.logger.log(log_dict, step=self.step, split="train")
+                        # wandb logging
+                        if self.config["wandb"]:
+                            wandb.log(
+                                {
+                                    **{"train/"+k: log_dict[k] for k in log_dict}, 
+                                    **{
+                                        "train/active_expanded": round_current,
+                                        "train/active_dataset_size": len(self.train_loader.dataset),
+                                        "train/global_epoch": global_epoch
+                                    }
+                                },
+                                step=self.step,
+                            )
+
+                        # reset metrics after logging
+                        self.metrics = {}
+
+                    if (checkpoint_every != -1 and self.step % checkpoint_every == 0):
+                        self.save(checkpoint_file="checkpoint.pt", training_state=True)
+
+                    # Evaluate on val set every `eval_every` iterations. (Validation)
+                    if self.step % eval_every == 0:
+                        if self.val_loader is not None:
+                            val_metrics = self.validate(split="val")
+                            self.update_best(primary_metric, val_metrics)
+                            if self.config["wandb"]:
+                                wandb.log(
+                                    {"val/"+k: val_metrics[k]["metric"] for k in val_metrics},
+                                    step=self.step
+                                )
+
+                    if self.scheduler.scheduler_type == "ReduceLROnPlateau":
+                        if self.step % eval_every == 0:
+                            self.scheduler.step(metrics=val_metrics[primary_metric]["metric"])
+                    else:
+                        self.scheduler.step()
+
+                torch.cuda.empty_cache()
+
+                if checkpoint_every == -1:
+                    self.save(checkpoint_file="checkpoint.pt", training_state=True)
+            
+                if (self.config["save_ckpt_every_epoch"] and 
+                    (epoch_int+1) % self.config["save_ckpt_every_epoch"] == 0
+                ):
+                    # evaluation checkpoint (for benchmarking models during training)
+                    self.save(
+                        metrics=val_metrics,
+                        checkpoint_file=f"ckpt_ep{epoch_int+1}.pt",
+                        training_state=False,
+                    )
+
+                bm_logging.info(f"{epoch_int+1} epoch elapsed time: {time.time()-start_epoch_time:.1f} sec")
+
+            round_elapsed_time = time.time() - start_round_time
+            bm_logging.info(f"[Active] Round {round_current} elapsed time: {round_elapsed_time:.1f} sec")
+            self.save(
+                metrics=val_metrics,
+                checkpoint_file=f"ckpt_round{round_current}.pt",
+                training_state=False,
+            )
+            
+            # Evaluation done on each round
+            self.round_current = round_current
+            if not self.config["active"].get("debug", False):
+                metric_table = self.create_metric_table(display_meV=True)
+                bm_logging.info(f'[Active] Evaluation on round {round_current}')
+                bm_logging.info(f"\n{metric_table}")
+            
+            # Update dataset
+            global_step = self.step
+            dataset_update_time = time.time()
+            self.update_active_dataset(round_current)
+            dataset_update_time = time.time()-dataset_update_time
+            bm_logging.info(f"[Active] Dataset update time: {dataset_update_time:.1f} sec")
+            if self.config["wandb"]:
+                index_image = torch.zeros(1, self.org_dataset_size, 1, device=self.al_dataset_idx.device)
+                index_image.index_fill_(1, self.al_dataset_idx, 1)
+                wandb.log(
+                    {
+                        "round": round_current,
+                        "active.dataset_update_time": dataset_update_time,
+                        "active.dataset_index": wandb.Histogram(index_image.detach().cpu().numpy())
+                    },
+                    step=self.step,
+                )
+        
+        train_elapsed_time = time.time()-start_train_time
+        bm_logging.info(f"Total training elapsed time: {train_elapsed_time:.1f} sec, rounds {round_current}")
+
+        # Final evaluation
+        bm_logging.info("Performing the final evaluation (last model)")
+        metric_table = self.create_metric_table(display_meV=True)
+        bm_logging.info(f"\n{metric_table}")
+        if self.logger:
+            self.logger.log_final_metrics(metric_table, train_elapsed_time)
+
+        # end procedure of train()
+        if self.config["wandb"]:
+            wandb.finish()
+        self._end_train()
+        
+    def active_train_ensemble(self):
+        # Configurations
+        ensure_fitted(self._unwrapped_model, warn=True)
+        if self.logger:
+            self.logger.log_model_training_info(self._unwrapped_model)
+        eval_every = self.config["optim"].get("eval_every", len(self.train_loader))
+        checkpoint_every = self.config["optim"].get("checkpoint_every", eval_every)
+        primary_metric = self.config["task"].get("primary_metric", self.evaluator.task_primary_metric[self.task_name])
+        if (
+            not hasattr(self, "primary_metric")
+            or self.primary_metric != primary_metric
+        ):
+            self.best_val_metric = 1e9 if ("mae" in primary_metric or "mse" in primary_metric) else -1.0
+        else:
+            primary_metric = self.primary_metric
+        self.metrics = {}
+        
+        # Active learning configurations
+        global_step = 0
+        initial_weights = deepcopy(self.model.state_dict())
+        start_train_time = time.time()
+        
+        # NOTE: Active learning round loop
+        for round_current in range(0, self.config["active"]["rounds"]):
+            eval_every = self.config["optim"].get("eval_every", len(self.train_loader))
+            checkpoint_every = self.config["optim"].get("checkpoint_every", eval_every)
+            if round_current != 0:
+                bm_logging.info(f"[Active] Model initiliazed")
+                self.model.load_state_dict(initial_weights)
+            bm_logging.info(f"[Active] Round {round_current} \n - Current dataset size: {len(self.train_loader.dataset)}\n - Remaining dataset size: {len(self.al_dataset_remaining_idx)}\n - Steps taken: {self.step}")
             
             # Training loop
             start_round_time = time.time()
@@ -936,7 +1153,7 @@ class ForcesTrainer(BaseTrainer):
             out["stress"] = _out[2]
         return out
 
-    def _compute_loss(self, out, batch_list):
+    def _compute_loss(self, out, batch_list, as_list=False):
         loss = []
 
         # Energy loss
@@ -1011,7 +1228,7 @@ class ForcesTrainer(BaseTrainer):
             )
         loss.append(force_mult * force_loss)
         
-        # NOTE: For analysis
+        # NOTE: analysis
         # self.peratom_energy_error.append([self.loss_fn["energy"](input=out["energy"][i], target=energy_target[i], natoms=1, batch_size=batch_list[0].natoms.shape[0],).item() for i in range(0, energy_target.shape[0])])
         # self.peratom_force_error.append([self.loss_fn["force"](input=out["forces"][i], target=force_target[i]).item() for i in range(0, force_target.shape[0])])
 

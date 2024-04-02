@@ -56,7 +56,7 @@ model:
   nonlinearity_gates:
     e: silu
     o: tanh
-  dropout: 0.1
+  dropout: 0
 
   # using data statistics
   # 'auto' requires to set 'initialize' as True, meaning that data statistics will be calculated if the statistics file does not exist
@@ -81,7 +81,7 @@ optim:
   batch_size: 16 
   eval_batch_size: 16
   num_workers: 2
-  max_epochs: 1
+  max_epochs: 120
 
   optimizer: Adam
   optimizer_params: {"amsgrad": False}

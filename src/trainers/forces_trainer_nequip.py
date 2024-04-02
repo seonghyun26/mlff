@@ -99,7 +99,7 @@ class NequIPForcesTrainer(ForcesTrainer):
         params_no_decay = []
         return params_decay, params_no_decay
 
-    def _compute_loss(self, out, batch_list):
+    def _compute_loss(self, out, batch_list, as_list=False):
         # loss function always needs to be in normalized unit (according to NequIP)
         if self.model.training:
             # loss used in train mode
@@ -117,7 +117,7 @@ class NequIPForcesTrainer(ForcesTrainer):
                     normalized_batch.stress = b[AtomicDataDict.STRESS_KEY]
                 normalized_batch.natoms = torch.bincount(batch[AtomicDataDict.BATCH_KEY])
                 normalized_batch_list.append(normalized_batch)
-            return super()._compute_loss(out=out, batch_list=normalized_batch_list)
+            return super()._compute_loss(out=out, batch_list=normalized_batch_list,as_list=as_list)
         else:
             # loss used in eval mode
             with torch.no_grad():
@@ -148,7 +148,7 @@ class NequIPForcesTrainer(ForcesTrainer):
                     force_process=True,
                 )
                 normalized_out = {key_map[1]: _out[key_map[0]] for key_map in nequip_ocp_key_mapper}
-                return super()._compute_loss(out=normalized_out, batch_list=normalized_batch_list)
+                return super()._compute_loss(out=normalized_out, batch_list=normalized_batch_list, as_list=as_list)
 
     def _compute_metrics(self, out, batch_list, evaluator, metrics={}):
         

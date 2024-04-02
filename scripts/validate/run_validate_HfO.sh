@@ -4,7 +4,7 @@ GPU=$1
 # CKPT_DIR=$(realpath "../../train_results/HfO/NequIP_test/checkpoints/")
 # LATEST_CKPT_DIR=$(find $CKPT_DIR -name "checkpoint.pt" -exec dirname {} \; | sort -nr | head -n 1)
 CKPT_DIR=$(realpath "../../train_results/HfO/NequIP_noise/checkpoints/train-20240401_051952/")
-DATA_LMDB=$(realpath "../../datasets/HfO/ood/atom_graph_rmax6.0_maxneighbor50/ood.lmdb")
+DATA_LMDB=$(realpath "../../datasets/HfO/atom_graph_rmax6.0_maxneighbor50/test.lmdb")
 echo ${CKPLATEST_CKPT_DIRT_DIR}
 
 BENCHMARK_HOME=$(realpath ../../)

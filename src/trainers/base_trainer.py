@@ -822,7 +822,11 @@ class BaseTrainer(ABC):
             bm_logging.info(f"Evaluating on {dataname} ...")
             metrics = self.validate(split=dataname, loader=dataloader, log_flag=False)
             table_row_metrics = [dataname]
-            for metric_name in self.evaluator.metric_fn:
+            pbar = tqdm(
+                self.evaluator.metric_fn,
+                desc=f"Evaluation on metrics",
+            )
+            for metric_name in pbar:
                 if display_meV and "mae" in metric_name:
                     table_row_metrics.append(f"{metrics[metric_name]['metric'] * 1000:.1f}")
                 elif display_meV and "mse" in metric_name:

@@ -37,6 +37,6 @@ date
 nvidia-smi
 
 cd ../scripts/train
-./run_train_parallel.sh NequIP_noise_slurm
+./run_train_parallel.sh NequIP_debug
 
 echo  "##### FINISHED #####"

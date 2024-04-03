@@ -14,22 +14,20 @@
 cd $SLURM_SUBMIT_DIR
 echo "SLURM_SUBMIT_DIR=$SLURM_SUBMIT_DIR"
 echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
+echo "CONDA_ENVIRONMENT=$CONDA_DEFAULT_ENV"
 # echo "CUDA_HOME=$CUDA_HOME"
 # echo "CUDA_VERSION=$CUDA_VERSION"
 
 srun -l /bin/hostname
 srun -l /bin/pwd
 srun -l /bin/date
-
 module purge
 
 ## 기타 실행할 스크립트를 여기 작성
 
 date
-nvidia-smi
 
-CONDA_ENV="mlff"
-# conda activate $CONDA_ENV
+nvidia-smi
 
 cd ../scripts/train
 ./run_train_parallel.sh NequIP_mcd

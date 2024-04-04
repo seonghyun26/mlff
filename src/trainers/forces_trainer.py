@@ -488,7 +488,7 @@ class ForcesTrainer(BaseTrainer):
     def uncertainty_gp(self):
         raise NotImplementedError(f"Active learning method {self.config['active']['update_method']} is not supported yet")
 
-    def uncertainty_cheet(self):
+    def uncertainty_cheat(self):
         def add_noise(batch, noise_scale, update_edge=False):
             gaussian_noise = torch.normal(0, noise_scale, size=batch[0].pos.shape, device=batch[0].total_energy.device)
             edge_index = batch[0].edge_index
@@ -511,7 +511,11 @@ class ForcesTrainer(BaseTrainer):
         ensure_fitted(self._unwrapped_model, warn=True)
         rank = distutils.get_rank()
         self.model.eval()
-        loss = []
+        
+        pred_var_energy = []
+        pred_var_forces = []
+        loss_energy = []
+        loss_forces = []
         
         pbar = tqdm(
             enumerate(self.train_loader),
@@ -536,38 +540,184 @@ class ForcesTrainer(BaseTrainer):
                 [batch_.total_energy.to(self.device) for batch_ in batch], dim=0
             )
             natoms = 96
-            loss_energy = torch.square((energy_target - out["energy"]) / natoms)
-            loss.append(loss_energy)
+            batch_loss_energy = torch.square((energy_target - out["energy"]) / natoms)
+            loss_energy.append(batch_loss_energy)
             
             # Forces loss
             mse_loss = torch.nn.MSELoss(reduction="none")
             force_target = torch.cat(
                 [batch_.forces.to(self.device) for batch_ in batch], dim=0
             )
-            loss_forces = mse_loss(out["forces"].reshape(-1), force_target.reshape(-1))
+            batch_loss_forces = mse_loss(out["forces"].reshape(-1), force_target.reshape(-1))
+            loss_forces.append(batch_loss_forces)
             
             batch_prediction_variation_energy = self.uncertainty_prediction_variation("energy", variance_batch_energy)
             batch_prediction_variation_forces = self.uncertainty_prediction_variation("forces", variance_batch_forces)
+            pred_var_energy.append(batch_prediction_variation_energy)
+            pred_var_forces.append(batch_prediction_variation_forces)
             
-            if self.config["wandb"]:
-                for j in range(len(loss_energy)):
-                    wandb.log({
-                        "round": self.round_current,
-                        "active/loss_energy": loss_energy[j],
-                        "active/loss_forces": loss_forces[j],
-                        "active/variance_energy": batch_prediction_variation_energy[j],
-                        "active/variance_forces": batch_prediction_variation_forces[j],
-                    })
+            del energy_target, force_target, batch_loss_energy, batch_loss_forces
+            del batch_prediction_variation_energy, batch_prediction_variation_forces
+            torch.cuda.empty_cache()
             
             if i == self.config["active"].get("debug_round_cutoff", -1) and self.config["active"].get("debug", False):
                 break
         
+        loss_energy = torch.cat(loss_energy)
+        loss_forces = torch.cat(loss_forces)
+        pred_var_energy = torch.cat(pred_var_energy)
+        pred_var_forces = torch.cat(pred_var_forces)
         
-        loss = torch.cat(loss)
-        selected_idx = torch.argsort(loss, descending=True)[:self.al_dataset_update_size]
+        energy_data = [[x, y] for (x, y) in zip(loss_energy, pred_var_energy)]
+        forces_data = [[x, y] for (x, y) in zip(loss_forces, pred_var_forces)]
+        table_energy = wandb.Table(data=energy_data, columns = ["loss_energy", "pred_var_energy"])
+        table_forces = wandb.Table(data=forces_data, columns = ["loss_forces", "pred_var_forces"])
+        if self.config["wandb"]:
+            wandb.log({
+                "energy_loss_and_variance" :wandb.plot.scatter(
+                    table_energy,
+                    "loss_energy",
+                    "pred_var_energy",
+                    title="Energy Scatter Plot - R"+str(self.round_current)
+                ),
+                "forces_loss_and_variance" : wandb.plot.scatter(
+                    table_forces,
+                    "loss_forces",
+                    "pred_var_forces",
+                    title="Forces Scatter Plot - R"+str(self.round_current)
+                ),
+                "round": self.round_current
+            })
+        
+        selected_idx = torch.argsort(loss_energy, descending=True)[:self.al_dataset_update_size]
         al_dataset_update_idx = al_dataset_remaining_idx_arr[selected_idx.detach().cpu().numpy()]
         self.al_dataset_idx = torch.concat([self.al_dataset_idx, torch.from_numpy(al_dataset_update_idx)])
         self.al_dataset_remaining_idx.difference_update(set(al_dataset_update_idx))
+        
+        del loss_energy, loss_forces, pred_var_energy, pred_var_forces
+        del energy_data, forces_data, table_energy, table_forces
+        torch.cuda.empty_cache()
+        
+        return al_dataset_update_idx
+    
+    def uncertainty_cheat_bin(self):
+        def add_noise(batch, noise_scale, update_edge=False):
+            gaussian_noise = torch.normal(0, noise_scale, size=batch[0].pos.shape, device=batch[0].total_energy.device)
+            edge_index = batch[0].edge_index
+            distance = torch.cdist(batch[0].pos[edge_index[0]].unsqueeze(1), batch[0].pos[edge_index[1]].unsqueeze(1), p=2).squeeze()
+            max_distance = torch.max(distance)
+            batch[0].pos = batch[0].pos + gaussian_noise
+            if update_edge:
+                atom_wise_distance = torch.cdist(batch[0].pos.unsqueeze(0), batch[0].pos.unsqueeze(0), p=2).squeeze()
+                raise NotImplementedError(f"Updaing edges when graph given is not supported yet")
+            
+            return batch
+        
+        noise_scale = self.config["active"].get("noise_scale", 0.1)
+        variance_target = self.config["active"].get("variance_target", "energy")
+        noise_update_edge = self.config["active"].get("noise_update_edge", False)
+        variance_sample_number = self.config["active"].get("variance_sample_number", 4)
+        bin_num = self.config["active"].get("update_bin_num", 4)
+        al_dataset_remaining_idx_arr = np.array(list(self.al_dataset_remaining_idx))
+        self.set_uncertainty_dataset(al_dataset_remaining_idx_arr)
+
+        ensure_fitted(self._unwrapped_model, warn=True)
+        rank = distutils.get_rank()
+        self.model.eval()
+        
+        pred_var_energy = []
+        pred_var_forces = []
+        loss_energy = []
+        loss_forces = []
+        
+        pbar = tqdm(
+            enumerate(self.train_loader),
+            total=len(self.train_loader),
+            position=rank,
+            desc=f"Device {rank}, selecting samples for active learning",
+        )
+        for i, batch in pbar:
+            with torch.cuda.amp.autocast(enabled=self.scaler is not None):
+                out = self._forward(batch)
+                # Variance by noise
+                variance_batch_energy =[]
+                variance_batch_forces =[]
+                for _ in range(variance_sample_number):
+                    batch = add_noise(batch, noise_scale, noise_update_edge)
+                    out = self._forward(batch)
+                    variance_batch_energy.append(out["energy"])
+                    variance_batch_forces.append(out["forces"])
+
+            # Energy loss
+            energy_target = torch.cat(
+                [batch_.total_energy.to(self.device) for batch_ in batch], dim=0
+            )
+            natoms = 96
+            batch_loss_energy = torch.square((energy_target - out["energy"]) / natoms)
+            loss_energy.append(batch_loss_energy)
+            # Forces loss
+            mse_loss = torch.nn.MSELoss(reduction="none")
+            force_target = torch.cat(
+                [batch_.forces.to(self.device) for batch_ in batch], dim=0
+            )
+            batch_loss_forces = mse_loss(out["forces"].reshape(-1), force_target.reshape(-1))
+            loss_forces.append(batch_loss_forces)
+            
+            batch_prediction_variation_energy = self.uncertainty_prediction_variation("energy", variance_batch_energy)
+            batch_prediction_variation_forces = self.uncertainty_prediction_variation("forces", variance_batch_forces)
+            pred_var_energy.append(batch_prediction_variation_energy)
+            pred_var_forces.append(batch_prediction_variation_forces)
+                        
+            if i == self.config["active"].get("debug_round_cutoff", -1) and self.config["active"].get("debug", False):
+                break
+        
+        loss_energy = torch.cat(loss_energy)
+        loss_forces = torch.cat(loss_forces)
+        pred_var_energy = torch.cat(pred_var_energy)
+        pred_var_forces = torch.cat(pred_var_forces)
+        
+        energy_data = [[x, y] for (x, y) in zip(loss_energy, pred_var_energy)]
+        forces_data = [[x, y] for (x, y) in zip(loss_forces, pred_var_forces)]
+        table_energy = wandb.Table(data=energy_data, columns = ["loss_energy", "pred_var_energy"])
+        table_forces = wandb.Table(data=forces_data, columns = ["loss_forces", "pred_var_forces"])
+        if self.config["wandb"]:
+            wandb.log({
+                "energy_loss_and_variance" :wandb.plot.scatter(
+                    table_energy,
+                    "loss_energy",
+                    "pred_var_energy",
+                    title="Energy Scatter Plot - R"+str(self.round_current)
+                ),
+                "forces_loss_and_variance" : wandb.plot.scatter(
+                    table_forces,
+                    "loss_forces",
+                    "pred_var_forces",
+                    title="Forces Scatter Plot - R"+str(self.round_current)
+                ),
+                "round": self.round_current
+            })
+        
+        # Bin division
+        energy_max, energy_min = torch.max(loss_energy), torch.min(loss_energy)
+        bin_size = (energy_max - energy_min) / bin_num
+        energy_bin = (loss_energy - energy_min) // bin_size
+        number_of_samples_for_bin = self.al_dataset_update_size // bin_num
+        selected_idx = []
+        
+        for bin_idx in range(bin_num):
+            bin_selected_idx = (energy_bin == bin_idx).nonzero().reshape(-1)
+            if len(bin_selected_idx) > 0:
+                selected_idx.append(bin_selected_idx[:number_of_samples_for_bin])
+        
+        selected_idx = torch.cat(selected_idx)
+        al_dataset_update_idx = al_dataset_remaining_idx_arr[selected_idx.detach().cpu().numpy()]
+        self.al_dataset_idx = torch.concat([self.al_dataset_idx, torch.from_numpy(al_dataset_update_idx)])
+        self.al_dataset_remaining_idx.difference_update(set(al_dataset_update_idx))
+        
+        del loss_energy, loss_forces, pred_var_energy, pred_var_forces
+        del energy_data, forces_data, table_energy, table_forces
+        del energy_max, energy_min, bin_size, energy_bin, selected_idx
+        torch.cuda.empty_cache()
         
         return al_dataset_update_idx
         
@@ -589,8 +739,10 @@ class ForcesTrainer(BaseTrainer):
             al_dataset_update_idx = self.uncertainty_evidential()
         elif self.config["active"]["update_method"] == "gaussian":
             al_dataset_update_idx = self.uncertainty_gp()
-        elif self.config["active"]["update_method"] == "cheet":
-            al_dataset_update_idx = self.uncertainty_cheet()
+        elif self.config["active"]["update_method"] == "cheat":
+            al_dataset_update_idx = self.uncertainty_cheat()
+        elif self.config["active"]["update_method"] == "cheat_bin":
+            al_dataset_update_idx = self.uncertainty_cheat_bin()
         else:
             raise NotImplementedError(f"Active learning method {self.config['active']['update_method']} is not supported yet")
         
@@ -612,7 +764,7 @@ class ForcesTrainer(BaseTrainer):
             elif active_type == "ensemble_model":
                 self.active_train_ensemble()
             else:
-                raise NotImplementedError(f"Active learning method {self.config['active']['method']} is not supported yet")
+                raise NotImplementedError(f"Active learning method {self.config['active']['type']} is not supported yet")
         else:
             # Configurations
             ensure_fitted(self._unwrapped_model, warn=True)
@@ -931,8 +1083,7 @@ class ForcesTrainer(BaseTrainer):
                         "round": round_current,
                         "active.dataset_update_time": dataset_update_time,
                         "active.dataset_index": wandb.Histogram(index_image.detach().cpu().numpy())
-                    },
-                    step=self.step,
+                    }
                 )
         
         train_elapsed_time = time.time()-start_train_time

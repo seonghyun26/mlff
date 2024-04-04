@@ -101,14 +101,16 @@ optim:
   #loss_force: l2mae
 
 active:
-  debug: True
-  debug_round_cutoff: 10
+  debug: False
+  debug_round_cutoff: -1
   use: True
   rounds: 10
+  type: single_model
   init_method: random
   init_size: 0.1
-  update_method: cheet
+  update_method: cheat_bin
   update_size: 0.08
+  update_bin_num: 8
   variance_target: energy
   variance_sample_number: 16
   noise_scale: 0.1
